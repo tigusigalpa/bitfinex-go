@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # two most recent stable Go versions
+        go: ["1.24", "1.25"]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+      - name: go mod tidy check
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: go vet
+        run: go vet ./...
+      - name: build (+examples)
+        run: go build ./... && go build -o /dev/null ./examples/public_quickstart ./examples/private_readonly ./examples/websocket_ticker
+      - name: unit tests
+        run: go test ./...
+      - name: race
+        run: go test -race ./...
+      - name: fuzz smoke
+        run: go test -run=Fuzz -fuzztime=15s ./internal/wire/
+      - name: coverage gate
+        run: |
+          go test -coverprofile=cover.out ./... >/dev/null
+          total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "total coverage: $total%"
+          awk -v t="$total" 'BEGIN{exit !(t+0>=55)}'
+
+  lint:
+    name: staticcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version: "1.25"
+      - uses: dominikh/staticcheck-action@f4f6a285f14d4b215e51c3dbef8ec55b4b7d06b9 # v1.3.1
+        with:
+          version: "2025.1"
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version: "1.25"
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          govulncheck ./...
+      - name: secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: github/codeql-action/init@0499c5150ee14c0ea1f7c3adf4b9ec01ed16ea99 # v3.28.0
+        with:
+          languages: go
+      - uses: github/codeql-action/analyze@0499c5150ee14c0ea1f7c3adf4b9ec01ed16ea99 # v3.28.0

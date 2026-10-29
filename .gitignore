@@ -1,0 +1,13 @@
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+cover.out
+vendor/
+.idea/
+.vscode/
+.env
+.env.*
+!examples/**/*.env.example
