@@ -1,6 +1,6 @@
 # Review of v1.0.0 and hardening in v1.1.0
 
-Review date: 2026-10-29. Baseline: immutable tag v1.0.0, commit
+Review dates: 2026-10-29–30 (Europe/Moscow). Baseline: immutable tag v1.0.0, commit
 `20402ff27988d2aae49704ed64107728391925ec`. The initial snapshot was released before
 code changes, as requested. No private Bitfinex operations or real funds were used.
 
@@ -64,7 +64,7 @@ in the v1.1.0 release notes and the repository's Actions run.
 
 Local Docker checks passed on Go 1.26.10 and 1.27.3, including race tests. The
 Go 1.27 run passed build/vet/staticcheck and govulncheck reported no vulnerabilities.
-Coverage reached 63.5% during hardening (final release notes record the final total).
+Final local coverage: 63.8%, with the 55% gate retained.
 All four five-second active fuzz campaigns passed. Gitleaks scanned the working
 tree and Git history without live secrets; its sole baseline match was a public
 synthetic HMAC test key, covered by an exact-value allowlist in `.gitleaks.toml`.

@@ -1,6 +1,6 @@
 # Endpoint coverage — Bitfinex API v2
 
-Version: **v1.1.0**. Review date: **2026-10-29**.
+Version: **v1.1.0**. Review dates: **2026-10-29–30** (Europe/Moscow).
 
 This is a coverage inventory, not a claim of full exchange compatibility. The
 original v1.0.0 inventory overstated test coverage and used placeholder links.
