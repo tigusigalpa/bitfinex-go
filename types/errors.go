@@ -3,7 +3,10 @@ package types
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -37,15 +40,14 @@ func (e *ValidationError) Error() string {
 }
 
 // APIError is a non-2xx response or a Bitfinex ["error",code,msg]
-// envelope. BodySnippet is bounded and contains only response
-// bytes — request secrets can never appear here.
+// envelope. The built-in transport redacts untrusted server message/body text.
 type APIError struct {
 	StatusCode  int           // HTTP status (0 if not applicable)
 	Code        int           // Bitfinex numeric error code (0 if none)
-	Message     string        // server text (never request data)
+	Message     string        // safe summary from the built-in transport
 	Endpoint    string        // safe endpoint path, e.g. "v2/auth/r/wallets"
 	Attempts    int           // attempts made before this error surfaced
-	BodySnippet string        // size-limited one-line response digest
+	BodySnippet string        // redacted placeholder in the built-in transport
 	RetryAfter  time.Duration // parsed Retry-After, if present
 }
 
@@ -74,12 +76,18 @@ type RateLimitError struct {
 	APIError
 }
 
+// Unwrap exposes the underlying API metadata to errors.As.
+func (e *RateLimitError) Unwrap() error { return &e.APIError }
+
 // AuthenticationError is an APIError for 401/403 or Bitfinex
 // auth failures (e.g. invalid key, bad signature, stale nonce).
 // Never retried automatically.
 type AuthenticationError struct {
 	APIError
 }
+
+// Unwrap exposes the underlying API metadata to errors.As.
+func (e *AuthenticationError) Unwrap() error { return &e.APIError }
 
 // TransportError wraps a network-layer failure (DNS, connect,
 // TLS, read/write timeout). Unwrap yields the underlying error.
@@ -90,7 +98,7 @@ type TransportError struct {
 }
 
 func (e *TransportError) Error() string {
-	return fmt.Sprintf("bitfinex: transport error on %s %s: %v", e.Op, e.Endpoint, e.Err)
+	return fmt.Sprintf("bitfinex: transport error on %s %s", e.Op, e.Endpoint)
 }
 
 func (e *TransportError) Unwrap() error { return e.Err }
@@ -100,16 +108,16 @@ func (e *TransportError) Unwrap() error { return e.Err }
 // idempotent requests.
 func (e *TransportError) Temporary() bool {
 	var ne interface{ Temporary() bool }
-	if errors.As(e.Err, &ne) {
-		return ne.Temporary()
+	if errors.As(e.Err, &ne) && ne.Temporary() {
+		return true
 	}
 	var te interface{ Timeout() bool }
-	if errors.As(e.Err, &te) {
-		return te.Timeout()
+	if errors.As(e.Err, &te) && te.Timeout() {
+		return true
 	}
-	// Connection refused/reset and DNS failures are treated as
-	// transient for idempotent reads.
-	return true
+	var dns *net.DNSError
+	return (errors.As(e.Err, &dns) && (dns.IsTemporary || dns.IsTimeout)) || errors.Is(e.Err, io.EOF) || errors.Is(e.Err, io.ErrUnexpectedEOF) ||
+		errors.Is(e.Err, syscall.ECONNRESET) || errors.Is(e.Err, syscall.ECONNREFUSED) || errors.Is(e.Err, syscall.EPIPE)
 }
 
 // ProtocolError reports a wire-contract violation: malformed
@@ -130,7 +138,7 @@ type NonceError struct {
 
 func (e *NonceError) Error() string {
 	if e.Err != nil {
-		return "bitfinex: nonce error: " + e.Message + ": " + e.Err.Error()
+		return "bitfinex: nonce error: " + e.Message
 	}
 	return "bitfinex: nonce error: " + e.Message
 }
@@ -147,7 +155,7 @@ type WebSocketError struct {
 
 func (e *WebSocketError) Error() string {
 	if e.Err != nil {
-		return fmt.Sprintf("bitfinex: websocket %s error: %s: %v", e.Op, e.Message, e.Err)
+		return fmt.Sprintf("bitfinex: websocket %s error: %s", e.Op, e.Message)
 	}
 	return fmt.Sprintf("bitfinex: websocket %s error: %s", e.Op, e.Message)
 }

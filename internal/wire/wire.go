@@ -16,6 +16,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strconv"
 
 	"github.com/tigusigalpa/bitfinex-go/types"
 )
@@ -26,7 +28,11 @@ func Decode(data []byte) (any, error) {
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
-		return nil, &types.ProtocolError{Message: "undecodable JSON body: " + err.Error()}
+		return nil, &types.ProtocolError{Message: "undecodable JSON body"}
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, &types.ProtocolError{Message: "trailing data after JSON value"}
 	}
 	return v, nil
 }
@@ -39,7 +45,7 @@ func DecodeString(s string) (any, error) { return Decode([]byte(s)) }
 func Encode(v any) ([]byte, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("bitfinex: failed to encode request body: %w", err)
+		return nil, &types.ValidationError{Field: "body", Message: "request cannot be encoded as JSON"}
 	}
 	return b, nil
 }
@@ -119,10 +125,7 @@ func Int(a []any, i int) (int64, bool, error) {
 		}
 		return 0, false, &types.ProtocolError{Message: fmt.Sprintf("non-integral string at index %d: %s", i, abbrev(v))}
 	case bool:
-		if n {
-			return 1, true, nil
-		}
-		return 0, true, nil
+		return 0, false, &types.ProtocolError{Message: fmt.Sprintf("expected integer at index %d, got bool", i)}
 	default:
 		return 0, false, &types.ProtocolError{Message: fmt.Sprintf("expected integer at index %d, got %s (%s)", i, kind(v), abbrev(v))}
 	}
@@ -194,6 +197,18 @@ func Decimal(a []any, i int) (types.Decimal, bool, error) {
 	return d, true, nil
 }
 
+// RequiredDecimal rejects null or missing monetary fields.
+func RequiredDecimal(a []any, i int) (types.Decimal, error) {
+	d, ok, err := Decimal(a, i)
+	if err != nil {
+		return types.Decimal{}, err
+	}
+	if !ok {
+		return types.Decimal{}, &types.ProtocolError{Message: fmt.Sprintf("missing required decimal at index %d", i)}
+	}
+	return d, nil
+}
+
 // DecOr is Decimal with a default for null/absent.
 func DecOr(a []any, i int, def types.Decimal) (types.Decimal, error) {
 	d, ok, err := Decimal(a, i)
@@ -208,6 +223,9 @@ func DecOr(a []any, i int, def types.Decimal) (types.Decimal, error) {
 
 // Bool reads a 0/1 flag at index i. Null → false.
 func Bool(a []any, i int) (bool, error) {
+	if b, ok := At(a, i).(bool); ok {
+		return b, nil
+	}
 	v, ok, err := Int(a, i)
 	if err != nil {
 		return false, err
@@ -279,31 +297,9 @@ func kind(v any) string {
 }
 
 func abbrev(v any) string {
-	s := fmt.Sprintf("%v", v)
-	if len(s) > 40 {
-		return s[:40] + "…"
-	}
-	return s
+	return "redacted " + kind(v)
 }
 
 func itoa(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	neg := v < 0
-	if neg {
-		v = -v
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return strconv.FormatInt(v, 10)
 }

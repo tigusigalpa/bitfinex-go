@@ -2,6 +2,7 @@ package funding
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/tigusigalpa/bitfinex-go/internal/httpx"
@@ -56,9 +57,9 @@ type OfferRequest struct {
 
 // Validate enforces the local contract before sending.
 func (r OfferRequest) Validate() error {
-	t := strings.ToLower(strings.TrimSpace(r.Type))
-	if t != TypeLend && t != TypeLoan {
-		return &types.ValidationError{Field: "type", Message: `funding offer type must be "lend" or "loan"`}
+	t := strings.ToUpper(strings.TrimSpace(r.Type))
+	if t != TypeLimit && t != TypeFRRDeltaFix && t != TypeFRRDeltaVar {
+		return &types.ValidationError{Field: "type", Message: "funding offer type must be LIMIT, FRRDELTAFIX or FRRDELTAVAR; direction is the amount sign"}
 	}
 	sym, err := types.ParseSymbol(r.Symbol)
 	if err != nil {
@@ -70,7 +71,7 @@ func (r OfferRequest) Validate() error {
 	if !r.Amount.IsValid() || r.Amount.IsZero() {
 		return &types.ValidationError{Field: "amount", Message: "funding offer amount must be non-zero"}
 	}
-	if !r.Rate.IsValid() || r.Rate.IsNegative() {
+	if !r.Rate.IsValid() || (r.Rate.IsNegative() && t != TypeFRRDeltaFix) {
 		return &types.ValidationError{Field: "rate", Message: "funding rate must be a non-negative decimal (use \"0\" for FRR)"}
 	}
 	if r.Period < 2 || r.Period > 120 {
@@ -82,10 +83,10 @@ func (r OfferRequest) Validate() error {
 // Body renders the request body.
 func (r OfferRequest) Body() map[string]any {
 	body := map[string]any{
-		"type":   strings.ToLower(strings.TrimSpace(r.Type)),
+		"type":   strings.ToUpper(strings.TrimSpace(r.Type)),
 		"symbol": r.Symbol,
-		"amount": r.Amount.String(),
-		"rate":   r.Rate.String(),
+		"amount": r.Amount.CanonicalString(),
+		"rate":   r.Rate.CanonicalString(),
 		"period": r.Period,
 	}
 	if r.Flags != nil {
@@ -158,10 +159,10 @@ func (r AutoRenewRequest) Body() map[string]any {
 		body["currency"] = strings.ToUpper(strings.TrimPrefix(strings.TrimSpace(r.Currency), "f"))
 	}
 	if r.Amount != nil {
-		body["amount"] = r.Amount.String()
+		body["amount"] = r.Amount.CanonicalString()
 	}
 	if r.Rate != nil {
-		body["rate"] = r.Rate.String()
+		body["rate"] = r.Rate.CanonicalString()
 	}
 	if r.Period != nil {
 		body["period"] = *r.Period
@@ -190,6 +191,9 @@ func (s *Service) Keep(ctx context.Context, fundingType string, ids []int64) (*t
 
 // OffersHistory returns POST /auth/r/funding/offers/{symbol}/hist.
 func (s *Service) OffersHistory(ctx context.Context, symbol string, q *types.HistoryQuery) (*types.Response[[]FundingOffer], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	sym, err := types.ParseSymbol(symbol)
 	if err != nil {
 		return nil, err
@@ -218,6 +222,9 @@ func (s *Service) Loans(ctx context.Context, symbol string) (*types.Response[[]F
 // LoansHistory returns POST /auth/r/funding/loans/{symbol}/hist.
 // Documented retention ~3 days.
 func (s *Service) LoansHistory(ctx context.Context, symbol string, q *types.HistoryQuery) (*types.Response[[]FundingLoan], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	sym, err := types.ParseSymbol(symbol)
 	if err != nil {
 		return nil, err
@@ -246,6 +253,9 @@ func (s *Service) Credits(ctx context.Context, symbol string) (*types.Response[[
 // CreditsHistory returns POST /auth/r/funding/credits/{symbol}/hist.
 // Documented retention ~3 days.
 func (s *Service) CreditsHistory(ctx context.Context, symbol string, q *types.HistoryQuery) (*types.Response[[]FundingCredit], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	sym, err := types.ParseSymbol(symbol)
 	if err != nil {
 		return nil, err
@@ -259,6 +269,9 @@ func (s *Service) CreditsHistory(ctx context.Context, symbol string, q *types.Hi
 
 // TradesHistory returns POST /auth/r/funding/trades/{symbol}/hist.
 func (s *Service) TradesHistory(ctx context.Context, symbol string, q *types.HistoryQuery) (*types.Response[[]FundingTrade], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	sym, err := types.ParseSymbol(symbol)
 	if err != nil {
 		return nil, err
@@ -276,7 +289,7 @@ func (s *Service) Info(ctx context.Context, key string) (*types.Response[[]types
 	if strings.TrimSpace(key) == "" {
 		return nil, &types.ValidationError{Field: "key", Message: "funding info key required (e.g. \"sym_fUSD\")"}
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/info/funding/"+key, nil, readBucket())
+	r, err := s.t.PostAuth(ctx, "v2/auth/r/info/funding/"+url.PathEscape(key), nil, readBucket())
 	if err != nil {
 		return nil, err
 	}

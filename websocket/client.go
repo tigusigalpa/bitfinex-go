@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/url"
 	"sync"
 	"time"
 
@@ -28,10 +29,13 @@ type Subscription struct {
 	req    SubscriptionRequest
 	events chan Event
 
-	mu     sync.Mutex
-	wg     sync.WaitGroup // in-flight delivers; close waits for them
-	chanID int64
-	closed bool
+	mu       sync.Mutex
+	stopInit sync.Once
+	stopOnce sync.Once
+	stop     chan struct{}
+	chanID   int64
+	closed   bool
+	err      error
 }
 
 // ChanID returns the current server channel id (it changes on
@@ -48,7 +52,11 @@ func (s *Subscription) Request() SubscriptionRequest { return s.req }
 // Events yields ordered events until the subscription ends.
 func (s *Subscription) Events() <-chan Event { return s.events }
 
+// Err reports the terminal subscription failure, if any.
+func (s *Subscription) Err() error { s.mu.Lock(); defer s.mu.Unlock(); return s.err }
+
 func (s *Subscription) closeEvents() {
+	s.stopDelivery()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -56,9 +64,14 @@ func (s *Subscription) closeEvents() {
 	}
 	s.closed = true
 	s.mu.Unlock()
-	s.wg.Wait() // let in-flight sends finish — no send-on-closed
 	close(s.events)
 }
+
+func (s *Subscription) deliveryDone() <-chan struct{} {
+	s.stopInit.Do(func() { s.stop = make(chan struct{}) })
+	return s.stop
+}
+func (s *Subscription) stopDelivery() { _ = s.deliveryDone(); s.stopOnce.Do(func() { close(s.stop) }) }
 
 // pendAck tracks a subscription waiting for its ack. ack is
 // signaled (non-blocking) by the read loop; a nil ack channel
@@ -74,31 +87,55 @@ type pendAck struct {
 // with typed subscriptions. Construct via New, drive with
 // ConnectPublic/ConnectAuth, release with Close.
 type Client struct {
-	cfg Config
+	cfg       Config
+	ctx       context.Context
+	writeOnce sync.Once
+	writeGate chan struct{}
 
-	mu      sync.Mutex
-	conn    Conn
-	closed  bool
-	authed  bool
-	seqAll  bool
-	started bool
-	done    chan struct{}
-	cancel  context.CancelFunc
-	lifeCh  chan Event
-	pingSeq int64
-	subs    map[int64]*Subscription
-	byKey   map[string]*Subscription
-	pending map[string]*pendAck
-	reqs    map[string]SubscriptionRequest
-	books   map[int64]*bookIntegrity
-	lastSeq int64
-	seqInit bool
-	paused  bool
+	mu            sync.Mutex
+	conn          Conn
+	closed        bool
+	authed        bool
+	seqAll        bool
+	started       bool
+	ready         bool
+	everReady     bool
+	authenticated bool
+	done          chan struct{}
+	cancel        context.CancelFunc
+	lifeCh        chan Event
+	pingSeq       int64
+	subs          map[int64]*Subscription
+	byKey         map[string]*Subscription
+	pending       map[string]*pendAck
+	reqs          map[string]SubscriptionRequest
+	books         map[int64]*bookIntegrity
+	lastSeq       int64
+	seqInit       bool
+	paused        bool
 }
+
+// String keeps authentication dependencies out of diagnostics.
+func (c *Client) String() string { return "websocket.Client{<redacted>}" }
+
+// GoString redacts debug formatting.
+func (c *Client) GoString() string { return c.String() }
 
 // New builds a Client from cfg. The connection is NOT opened
 // until ConnectPublic/ConnectAuth.
 func New(cfg Config) (*Client, error) {
+	for _, raw := range []string{cfg.PublicURL, cfg.PrivateURL} {
+		if raw == "" {
+			continue
+		}
+		u, e := url.Parse(raw)
+		if e != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" || u.User != nil {
+			return nil, &types.ValidationError{Field: "ws_url", Message: "invalid WebSocket endpoint"}
+		}
+	}
+	if cfg.EventBuffer < 0 || cfg.MaxSubscriptions < 0 || (cfg.Backpressure != BackpressureStop && cfg.Backpressure != BackpressureBlock) {
+		return nil, &types.ValidationError{Field: "websocket", Message: "invalid buffer, subscription cap or backpressure policy"}
+	}
 	cfg.withDefaults()
 	if cfg.PublicURL == "" {
 		return nil, &types.ValidationError{Field: "public_ws_url", Message: "required"}
@@ -109,8 +146,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	_, cancel := context.WithCancel(context.Background())
+	lifeCtx, cancel := context.WithCancel(context.Background())
 	return &Client{
+		ctx:     lifeCtx,
 		cfg:     cfg,
 		done:    make(chan struct{}),
 		lifeCh:  make(chan Event, 64),
@@ -132,6 +170,9 @@ func (c *Client) Lifecycle() <-chan Event { return c.lifeCh }
 // {"event":"conf","flags":N} with FlagSeqAll|FlagChecksum to
 // enable book integrity mode.
 func (c *Client) ConnectPublic(ctx context.Context, flags int) error {
+	if flags & ^(FlagSeqAll|FlagChecksum) != 0 {
+		return &types.ValidationError{Field: "flags", Message: "only SEQ_ALL and OB_CHECKSUM are supported"}
+	}
 	return c.connect(ctx, c.cfg.PublicURL, flags, nil)
 }
 
@@ -146,6 +187,14 @@ func (c *Client) ConnectAuth(ctx context.Context, opts AuthOptions) error {
 }
 
 func (c *Client) connect(ctx context.Context, url string, flags int, authOpts *AuthOptions) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if authOpts != nil {
+		copyOpts := *authOpts
+		copyOpts.Filter = append([]string(nil), authOpts.Filter...)
+		authOpts = &copyOpts
+	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -165,6 +214,7 @@ func (c *Client) connect(ctx context.Context, url string, flags int, authOpts *A
 
 	select {
 	case <-ctx.Done():
+		_ = c.Close()
 		return ctx.Err()
 	case err := <-ready:
 		return err
@@ -185,15 +235,23 @@ func (c *Client) Subscribe(ctx context.Context, req SubscriptionRequest) (*Subsc
 		c.mu.Unlock()
 		return nil, types.ErrClosed
 	}
-	if c.conn == nil {
+	if c.conn == nil || !c.ready {
 		c.mu.Unlock()
 		return nil, &types.WebSocketError{Op: "subscribe", Message: "not connected"}
+	}
+	if c.paused {
+		c.mu.Unlock()
+		return nil, &types.WebSocketError{Op: "subscribe", Message: "server is in maintenance"}
 	}
 	if _, dup := c.reqs[key]; dup {
 		c.mu.Unlock()
 		return nil, &types.ValidationError{Field: "channel", Message: "already subscribed to " + key}
 	}
-	if len(c.reqs) >= c.cfg.MaxSubscriptions {
+	limit := c.cfg.MaxSubscriptions
+	if c.authed {
+		limit--
+	}
+	if len(c.reqs) >= limit {
 		c.mu.Unlock()
 		return nil, &types.ValidationError{Field: "channel", Message: "max subscriptions reached (default 25 — see connection limits)"}
 	}
@@ -203,7 +261,7 @@ func (c *Client) Subscribe(ctx context.Context, req SubscriptionRequest) (*Subsc
 	c.reqs[key] = req
 	c.mu.Unlock()
 
-	if err := c.sendJSON(req.message()); err != nil {
+	if err := c.sendJSONContext(ctx, req.message()); err != nil {
 		c.removePending(key)
 		sub.closeEvents()
 		return nil, err
@@ -231,9 +289,28 @@ func (c *Client) Subscribe(ctx context.Context, req SubscriptionRequest) (*Subsc
 // removePending drops a pending request and its tracked req.
 func (c *Client) removePending(key string) {
 	c.mu.Lock()
+	sub := c.byKey[key]
+	if p := c.pending[key]; p != nil && sub == nil {
+		sub = p.sub
+	}
 	delete(c.pending, key)
 	delete(c.reqs, key)
+	delete(c.byKey, key)
+	var id int64
+	if sub != nil {
+		id = sub.ChanID()
+		if id != 0 {
+			delete(c.subs, id)
+			delete(c.books, id)
+		}
+	}
 	c.mu.Unlock()
+	if sub != nil {
+		sub.closeEvents()
+	}
+	if id != 0 {
+		_ = c.sendJSON(map[string]any{"event": "unsubscribe", "chanId": id})
+	}
 }
 
 // Unsubscribe removes a channel subscription and waits for the
@@ -249,7 +326,7 @@ func (c *Client) Unsubscribe(ctx context.Context, chanID int64) error {
 	if !ok {
 		return &types.ValidationError{Field: "chanId", Message: "unknown channel id"}
 	}
-	if err := c.sendJSON(map[string]any{"event": "unsubscribe", "chanId": chanID}); err != nil {
+	if err := c.sendJSONContext(ctx, map[string]any{"event": "unsubscribe", "chanId": chanID}); err != nil {
 		return err
 	}
 	// Wait briefly for the ack; absence is not fatal — the
@@ -270,7 +347,7 @@ func (c *Client) Unsubscribe(ctx context.Context, chanID int64) error {
 			}
 		}
 	}
-	return nil
+	return &types.WebSocketError{Op: "unsubscribe", Message: "acknowledgement timed out"}
 }
 
 // SubscribeAccount returns the account-stream subscription on
@@ -283,7 +360,7 @@ func (c *Client) SubscribeAccount() (*Subscription, error) {
 	if c.closed {
 		return nil, types.ErrClosed
 	}
-	if !c.authed {
+	if !c.authenticated || c.conn == nil {
 		return nil, &types.WebSocketError{Op: "subscribe", Message: "account stream requires ConnectAuth"}
 	}
 	if s, ok := c.subs[0]; ok {
@@ -316,10 +393,16 @@ func (c *Client) SendAuthInput(ctx context.Context, stream string, payload any) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !c.authed {
+	c.mu.Lock()
+	authed, paused := c.authenticated, c.paused
+	c.mu.Unlock()
+	if !authed {
 		return &types.WebSocketError{Op: "write", Message: "auth inputs require ConnectAuth"}
 	}
-	return c.sendJSON([]any{0, stream, nil, payload})
+	if paused {
+		return &types.WebSocketError{Op: "write", Message: "server is in maintenance"}
+	}
+	return c.sendJSONContext(ctx, []any{0, stream, nil, payload})
 }
 
 // OrderNew sends the "on" input — a new order. Reuses
@@ -421,6 +504,7 @@ func (c *Client) Close() error {
 		<-c.done // readLoop closes done on exit
 	} else {
 		close(c.done)
+		close(c.lifeCh)
 	}
 
 	c.mu.Lock()
@@ -435,6 +519,22 @@ func (c *Client) Close() error {
 
 // sendJSON serializes and writes a frame under the write lock.
 func (c *Client) sendJSON(v any) error {
+	return c.sendJSONContext(context.Background(), v)
+}
+
+func (c *Client) sendJSONContext(ctx context.Context, v any) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	c.writeOnce.Do(func() { c.writeGate = make(chan struct{}, 1) })
+	select {
+	case c.writeGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.writeGate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return &types.WebSocketError{Op: "write", Message: "encode failed", Err: err}
@@ -447,8 +547,11 @@ func (c *Client) sendJSON(v any) error {
 		return types.ErrClosed
 	}
 	if d, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		_ = d.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		deadline, _ := ctx.Deadline()
+		_ = d.SetWriteDeadline(deadline)
 	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	if err := conn.WriteMessage(1 /* text */, b); err != nil {
 		return &types.WebSocketError{Op: "write", Message: "send failed", Err: err}
 	}

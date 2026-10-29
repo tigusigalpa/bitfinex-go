@@ -10,13 +10,10 @@ import (
 	"time"
 
 	"github.com/tigusigalpa/bitfinex-go/auth"
-	"github.com/tigusigalpa/bitfinex-go/funding"
+
 	"github.com/tigusigalpa/bitfinex-go/internal/wire"
-	"github.com/tigusigalpa/bitfinex-go/market"
-	"github.com/tigusigalpa/bitfinex-go/orders"
-	"github.com/tigusigalpa/bitfinex-go/positions"
+
 	"github.com/tigusigalpa/bitfinex-go/types"
-	"github.com/tigusigalpa/bitfinex-go/wallets"
 )
 
 // readLoop owns the connection lifecycle: dial → handshake →
@@ -25,13 +22,22 @@ import (
 // (reported through ready on the first attempt).
 func (c *Client) readLoop(url string, flags int, authOpts *AuthOptions, ready chan<- error) {
 	defer close(c.done)
+	defer close(c.lifeCh)
 
 	attempt := 0
 	for {
 		attempt++
+		generationStart := time.Now()
 		first := attempt == 1
-		err := c.runConn(url, flags, authOpts, first, ready)
-		if first && err != nil {
+		var firstReady chan<- error
+		if first {
+			firstReady = ready
+		}
+		err := c.runConn(url, flags, authOpts, first, firstReady)
+		c.mu.Lock()
+		everReady := c.everReady
+		c.mu.Unlock()
+		if first && err != nil && !everReady {
 			return // unrecoverable first-attempt failure
 		}
 
@@ -44,11 +50,15 @@ func (c *Client) readLoop(url string, flags int, authOpts *AuthOptions, ready ch
 
 		// Reconnect with capped full-jitter backoff.
 		delay := reconnectDelay(c.cfg.ReconnectBase, c.cfg.ReconnectCap, attempt)
+		// At most one new connection every three seconds per client.
+		if floor := 3*time.Second - time.Since(generationStart); delay < floor {
+			delay = floor
+		}
 		c.cfg.Logger.Debug("websocket reconnecting", "url", safeURL(url), "attempt", attempt, "delay", delay.String())
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
-		case <-c.done:
+		case <-c.ctx.Done():
 			timer.Stop()
 			return
 		}
@@ -68,16 +78,26 @@ func (c *Client) runConn(url string, flags int, authOpts *AuthOptions, first boo
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
 	defer cancel()
 
 	conn, err := c.cfg.Dialer.Dial(ctx, url)
 	if err != nil {
 		return report(&types.WebSocketError{Op: "dial", Message: "dial failed", Err: err})
 	}
+	defer conn.Close()
+	stopHandshake := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopHandshake()
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return report(types.ErrClosed)
+	}
 	c.conn = conn
+	c.seqInit = false
+	c.paused = false
 	c.mu.Unlock()
+	defer func() { c.mu.Lock(); c.conn = nil; c.ready = false; c.authenticated = false; c.mu.Unlock() }()
 
 	// 1) expect the {"event":"info"} handshake.
 	info, err := c.readFrame(conn)
@@ -100,6 +120,13 @@ func (c *Client) runConn(url string, flags int, authOpts *AuthOptions, first boo
 			conn.Close()
 			return report(err)
 		}
+		c.mu.Lock()
+		c.authenticated = true
+		c.mu.Unlock()
+		// Install channel zero before any account snapshots arrive.
+		if _, err := c.SubscribeAccount(); err != nil {
+			return report(err)
+		}
 	}
 
 	// 3) optional conf flags (public integrity mode).
@@ -117,6 +144,13 @@ func (c *Client) runConn(url string, flags int, authOpts *AuthOptions, first boo
 	}
 
 	// Handshake complete — only the read loop remains.
+	if !stopHandshake() || ctx.Err() != nil {
+		return report(ctx.Err())
+	}
+	c.mu.Lock()
+	c.ready = true
+	c.everReady = true
+	c.mu.Unlock()
 	report(nil)
 
 	// 5) read/dispatch until failure.
@@ -139,6 +173,9 @@ func (c *Client) runConn(url string, flags int, authOpts *AuthOptions, first boo
 
 // readFrame reads one text frame and decodes it.
 func (c *Client) readFrame(conn Conn) (any, error) {
+	if d, ok := conn.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = d.SetReadDeadline(time.Now().Add(45 * time.Second))
+	}
 	mt, raw, err := conn.ReadMessage()
 	if err != nil {
 		c.mu.Lock()
@@ -156,6 +193,9 @@ func (c *Client) readFrame(conn Conn) (any, error) {
 	if mt != 1 && mt != 2 { // not text/binary
 		return nil, &types.WebSocketError{Op: "read", Message: "unexpected frame type"}
 	}
+	if len(raw) > 4<<20 {
+		return nil, &types.ProtocolError{Message: "WebSocket frame exceeded 4 MiB limit"}
+	}
 	v, err := wire.Decode(raw)
 	if err != nil {
 		return nil, err
@@ -171,7 +211,7 @@ func (c *Client) handleInfoHandshake(msg any) error {
 		return &types.ProtocolError{Message: "expected info handshake object"}
 	}
 	if ev, _ := m["event"].(string); ev != "info" {
-		return &types.ProtocolError{Message: "expected info event, got " + ev}
+		return &types.ProtocolError{Message: "expected info event"}
 	}
 	if code, ok := m["code"].(json.Number); ok {
 		// Server-driven info codes inside the handshake are
@@ -188,15 +228,19 @@ func (c *Client) handleInfoHandshake(msg any) error {
 
 // sendAuth emits the signed auth frame with a fresh nonce.
 func (c *Client) sendAuth(opts *AuthOptions) error {
-	nonce, err := c.cfg.NonceProvider.Next(context.Background())
+	nonce, err := c.cfg.NonceProvider.Next(c.ctx)
 	if err != nil {
 		return &types.NonceError{Message: "nonce provider failed for ws auth", Err: err}
+	}
+	if err := auth.ValidateNonce(nonce); err != nil {
+		return err
 	}
 	msg := map[string]any{
 		"event":       "auth",
 		"apiKey":      c.cfg.Signer.Key(),
 		"authSig":     c.cfg.Signer.SignWebSocketAuth(nonce),
 		"authPayload": auth.AuthPayload(nonce),
+		"authNonce":   nonce,
 	}
 	if len(opts.Filter) > 0 {
 		msg["filter"] = opts.Filter
@@ -224,7 +268,7 @@ func (c *Client) awaitAuthOK(conn Conn) error {
 			status, _ := m["status"].(string)
 			if status != "OK" {
 				return &types.AuthenticationError{APIError: types.APIError{
-					Message: "websocket auth rejected: " + status,
+					Message: "websocket authentication rejected",
 				}}
 			}
 			return nil
@@ -248,8 +292,27 @@ func (c *Client) dispatch(msg any) {
 		c.emitLifecycle(Event{Kind: KindError, Err: &types.ProtocolError{Message: "WS frame has neither event nor chanId"}})
 		return
 	}
-	chanID := int64From(arr[0])
+	chanID, validID := numeric(arr[0])
+	if !validID || chanID < 0 {
+		c.emitLifecycle(Event{Kind: KindError, Err: &types.ProtocolError{Message: "invalid channel id"}})
+		return
+	}
 	payload := arr[1]
+	c.mu.Lock()
+	seqAll := c.seqAll
+	c.mu.Unlock()
+	if seqAll {
+		_, tagged := payload.(string)
+		minimum := 3
+		if tagged && payload != "hb" {
+			minimum = 4
+		}
+		if _, ok := numeric(arr[len(arr)-1]); !ok || len(arr) < minimum {
+			c.deliverError(chanID, &types.ProtocolError{Message: "missing sequence number in SEQ_ALL frame"})
+			c.resyncChannel(chanID)
+			return
+		}
+	}
 
 	// [chanId, "hb", (seq)] heartbeat.
 	if tag, ok := payload.(string); ok && tag == "hb" {
@@ -258,6 +321,7 @@ func (c *Client) dispatch(msg any) {
 				if gap := c.checkSeq(chanID, seq); gap != nil {
 					c.deliverError(chanID, gap)
 					c.resyncChannel(chanID)
+					return
 				}
 			}
 		}
@@ -274,6 +338,7 @@ func (c *Client) dispatch(msg any) {
 				if gap := c.checkSeq(chanID, seq); gap != nil {
 					c.deliverError(chanID, gap)
 					c.resyncChannel(chanID)
+					return
 				}
 			}
 		}
@@ -292,6 +357,7 @@ func (c *Client) dispatch(msg any) {
 				if gap := c.checkSeq(chanID, seq); gap != nil {
 					c.deliverError(chanID, gap)
 					c.resyncChannel(chanID)
+					return
 				}
 			}
 		}
@@ -404,16 +470,18 @@ func (c *Client) handleSubscribed(m map[string]any) {
 		if r.Freq != "" && freq != "" && r.Freq != freq {
 			continue
 		}
+		if length := int64From(m["len"]); r.Len > 0 && length > 0 && int64(r.Len) != length {
+			continue
+		}
 		matchedKey = k
 		matched = p
 		break
 	}
 	if matched == nil {
-		// Unknown ack — build a generic sub so events aren't lost.
-		req := SubscriptionRequest{Channel: channel, Symbol: sym, Key: key, Prec: prec, Freq: freq}
-		matchedKey = req.cacheKey()
-		matched = &pendAck{key: matchedKey, req: req, sub: &Subscription{req: req, events: make(chan Event, c.cfg.EventBuffer)}}
-		c.reqs[matchedKey] = req
+		// A late ack for a cancelled subscription must not create an orphan.
+		c.mu.Unlock()
+		_ = c.sendJSON(map[string]any{"event": "unsubscribe", "chanId": chanID})
+		return
 	}
 	sub := matched.sub
 	sub.mu.Lock()
@@ -449,7 +517,17 @@ func (c *Client) resubscribeAll() {
 	reqs := make([]SubscriptionRequest, 0, len(c.reqs))
 	for k, r := range c.reqs {
 		reqs = append(reqs, r)
-		c.pending[k] = &pendAck{key: k, req: r, sub: c.byKey[k]}
+		if p := c.pending[k]; p != nil {
+			continue
+		}
+		if sub := c.byKey[k]; sub != nil {
+			c.pending[k] = &pendAck{key: k, req: r, sub: sub}
+		}
+	}
+	account := c.subs[0]
+	c.subs = map[int64]*Subscription{}
+	if account != nil {
+		c.subs[0] = account
 	}
 	c.books = map[int64]*bookIntegrity{}
 	c.seqInit = false
@@ -466,20 +544,12 @@ func (c *Client) resubscribeAll() {
 // sequence gap or checksum mismatch.
 func (c *Client) resyncChannel(chanID int64) {
 	c.mu.Lock()
-	sub := c.subs[chanID]
+	conn := c.conn
+	c.books = map[int64]*bookIntegrity{}
 	c.mu.Unlock()
-	if sub == nil {
-		return
-	}
-	_ = c.sendJSON(map[string]any{"event": "unsubscribe", "chanId": chanID})
-	c.mu.Lock()
-	delete(c.subs, chanID)
-	delete(c.books, chanID)
-	key := sub.req.cacheKey()
-	c.pending[key] = &pendAck{key: key, req: sub.req, sub: sub}
-	c.mu.Unlock()
-	if err := c.sendJSON(sub.req.message()); err != nil {
-		c.deliverTo(sub, Event{Kind: KindError, ChanID: chanID, Err: err})
+	// Sequence numbers cover the connection, so every channel may be stale.
+	if conn != nil {
+		_ = conn.Close()
 	}
 }
 
@@ -495,9 +565,6 @@ func (c *Client) checkSeq(chanID, seq int64) error {
 		c.seqInit = true
 		c.lastSeq = seq
 		return nil
-	}
-	if seq == c.lastSeq {
-		return nil // duplicate
 	}
 	if seq != c.lastSeq+1 {
 		gap := &types.SequenceGapError{ChanID: chanID, Expected: c.lastSeq + 1, Got: seq}
@@ -527,162 +594,11 @@ func (c *Client) handleChecksum(chanID int64, rawCS any) {
 	c.resyncChannel(chanID)
 }
 
-// dispatchTagged handles [chanId, tag, payload] frames.
-func (c *Client) dispatchTagged(chanID int64, tag string, payload any) {
-	if chanID == 0 {
-		c.dispatchAuthStream(tag, payload)
-		return
-	}
-	c.mu.Lock()
-	sub := c.subs[chanID]
-	c.mu.Unlock()
-	if sub == nil {
-		return
-	}
-	ev := Event{Kind: KindUpdate, ChanID: chanID, Channel: sub.req.Channel, Symbol: sub.req.Symbol, Raw: payload}
-	switch tag {
-	case "te", "tu":
-		if arr, ok := payload.([]any); ok {
-			sym, _ := types.ParseSymbol(sub.req.Symbol)
-			if tr, err := marketTradeFromWire(arr, sym); err == nil {
-				ev.Trades = []market.Trade{tr}
-			}
-		}
-	case "fte", "ftu":
-		if arr, ok := payload.([]any); ok {
-			if ft, err := funding.TradeFromWire(arr); err == nil {
-				ev.FundingTrades = []funding.FundingTrade{ft}
-			}
-		}
-	}
-	c.deliverTo(sub, ev)
-}
-
-// dispatchUntagged handles [chanId, payload] channel data:
-// snapshots then deltas, per channel type.
-func (c *Client) dispatchUntagged(chanID int64, payload any) {
-	c.mu.Lock()
-	sub := c.subs[chanID]
-	c.mu.Unlock()
-	if sub == nil {
-		return
-	}
-	arr, ok := payload.([]any)
-	if !ok {
-		return
-	}
-
-	switch sub.req.Channel {
-	case "ticker":
-		sym, _ := types.ParseSymbol(sub.req.Symbol)
-		tk, err := marketTickerFromWire(arr, sym)
-		if err != nil {
-			c.deliverTo(sub, Event{Kind: KindError, ChanID: chanID, Err: err})
-			return
-		}
-		c.deliverTo(sub, Event{Kind: KindUpdate, ChanID: chanID, Channel: "ticker", Symbol: sub.req.Symbol, Ticker: &tk, Raw: payload})
-
-	case "trades":
-		// payload is a list of trade rows (snapshot batch).
-		sym, _ := types.ParseSymbol(sub.req.Symbol)
-		trades := []market.Trade{}
-		rows, err := wire.Rows(payload, "ws trades")
-		if err == nil {
-			for _, row := range rows {
-				if tr, derr := marketTradeFromWire(row, sym); derr == nil {
-					trades = append(trades, tr)
-				}
-			}
-		}
-		c.deliverTo(sub, Event{Kind: KindSnapshot, ChanID: chanID, Channel: "trades", Symbol: sub.req.Symbol, Trades: trades, Raw: payload})
-
-	case "book":
-		c.handleBookData(sub, chanID, arr, payload)
-
-	case "candles":
-		out := []market.Candle{}
-		if rows, err := wire.Rows(payload, "ws candles"); err == nil && len(rows) > 0 {
-			for _, row := range rows {
-				if cd, derr := candleFromWire(row); derr == nil {
-					out = append(out, cd)
-				}
-			}
-		} else {
-			if cd, derr := candleFromWire(arr); derr == nil {
-				out = append(out, cd)
-			}
-		}
-		c.deliverTo(sub, Event{Kind: KindUpdate, ChanID: chanID, Channel: "candles", Candles: out, Raw: payload})
-
-	default: // status and anything else → raw passthrough
-		c.deliverTo(sub, Event{Kind: KindUpdate, ChanID: chanID, Channel: sub.req.Channel, Status: payload, Raw: payload})
-	}
-}
-
-// handleBookData applies snapshot/delta to the local integrity
-// book and emits typed book events.
-func (c *Client) handleBookData(sub *Subscription, chanID int64, arr []any, payload any) {
-	c.mu.Lock()
-	book := c.books[chanID]
-	c.mu.Unlock()
-
-	isRaw := sub.req.Prec == "R0"
-	isFunding := len(sub.req.Symbol) > 0 && sub.req.Symbol[0] == 'f'
-
-	// Snapshot: array of rows.
-	if len(arr) > 0 {
-		if _, nested := arr[0].([]any); nested {
-			levels := []market.BookLevel{}
-			if book != nil {
-				book.clear()
-			}
-			for _, item := range arr {
-				row, ok := item.([]any)
-				if !ok {
-					continue
-				}
-				lvl := decodeBookLevel(row, isRaw, isFunding)
-				levels = append(levels, lvl)
-				if book != nil {
-					applyLevel(book, row, isRaw, isFunding)
-				}
-			}
-			c.deliverTo(sub, Event{Kind: KindSnapshot, ChanID: chanID, Channel: "book", Symbol: sub.req.Symbol, BookSnapshot: levels, Raw: payload})
-			return
-		}
-	}
-
-	// Delta: single level row.
-	lvl := decodeBookLevel(arr, isRaw, isFunding)
-	if book != nil {
-		applyLevel(book, arr, isRaw, isFunding)
-	}
-	c.deliverTo(sub, Event{Kind: KindUpdate, ChanID: chanID, Channel: "book", Symbol: sub.req.Symbol, BookLevel: &lvl, Raw: payload})
-}
-
-// decodeBookLevel decodes one row into the sum-type by channel
-// precision/symbol class.
-func decodeBookLevel(row []any, isRaw, isFunding bool) market.BookLevel {
-	lvl := market.BookLevel{}
-	switch {
-	case isRaw:
-		if e, err := rawBookFromWire(row); err == nil {
-			lvl.Raw = &e
-		}
-	case isFunding:
-		if e, err := fundingBookFromWire(row); err == nil {
-			lvl.Funding = &e
-		}
-	default:
-		if e, err := bookEntryFromWire(row); err == nil {
-			lvl.Entry = &e
-		}
-	}
-	return lvl
-}
-
 // applyLevel mutates the integrity book from one row.
 func applyLevel(b *bookIntegrity, row []any, isRaw, isFunding bool) {
+	if isFunding {
+		return
+	}
 	if isRaw {
 		id := int64From(wire.At(row, 0))
 		price := decLexeme(wire.At(row, 1))
@@ -700,104 +616,6 @@ func applyLevel(b *bookIntegrity, row []any, isRaw, isFunding bool) {
 	b.applyPrec(price, count, amount)
 }
 
-// dispatchAuthStream decodes a chanID-0 tagged stream and
-// routes it to the account subscription.
-func (c *Client) dispatchAuthStream(tag string, payload any) {
-	c.mu.Lock()
-	sub := c.subs[0]
-	c.mu.Unlock()
-
-	ae := &AuthEvent{Stream: tag, Raw: payload}
-	kind := KindUpdate
-
-	decodeOne := func(dec func([]any) error, arr []any) bool {
-		return dec(arr) == nil
-	}
-	_ = decodeOne
-
-	arr, isArr := payload.([]any)
-	switch tag {
-	case "os", "on", "ou", "oc":
-		ordersOut, err := decodeEntityList(payload, orders.FromWire)
-		if err == nil {
-			ae.Orders = ordersOut
-			if tag == "os" {
-				kind = KindSnapshot
-			}
-		}
-	case "ps", "pn", "pu", "pc":
-		list, err := decodeEntityList(payload, positions.FromWire)
-		if err == nil {
-			ae.Positions = list
-			if tag == "ps" {
-				kind = KindSnapshot
-			}
-		}
-	case "te", "tu":
-		if isArr {
-			if te, err := orders.TradeExecutionFromWire(arr); err == nil {
-				ae.Trades = []orders.TradeExecution{te}
-			}
-		}
-	case "fos", "fon", "fou", "foc":
-		list, err := decodeEntityList(payload, funding.OfferFromWire)
-		if err == nil {
-			ae.Offers = list
-			if tag == "fos" {
-				kind = KindSnapshot
-			}
-		}
-	case "fcs", "fcn", "fcu", "fcc":
-		list, err := decodeEntityList(payload, funding.CreditFromWire)
-		if err == nil {
-			ae.Credits = list
-			if tag == "fcs" {
-				kind = KindSnapshot
-			}
-		}
-	case "fls", "fln", "flu", "flc":
-		list, err := decodeEntityList(payload, funding.LoanFromWire)
-		if err == nil {
-			ae.Loans = list
-			if tag == "fls" {
-				kind = KindSnapshot
-			}
-		}
-	case "ws", "wu":
-		list, err := decodeEntityList(payload, wallets.FromWire)
-		if err == nil {
-			ae.Wallets = list
-			if tag == "ws" {
-				kind = KindSnapshot
-			}
-		}
-	case "fte", "ftu":
-		if isArr {
-			if ft, err := funding.TradeFromWire(arr); err == nil {
-				ae.FundingTrades = []funding.FundingTrade{ft}
-			}
-		}
-	case "bu", "miu", "fiu":
-		ae.Info = payload
-	case "n":
-		if isArr {
-			if n, err := orders.NotificationFromWire(arr); err == nil {
-				ae.Notification = &n
-			}
-		}
-	default:
-		// Forward-compatible: unknown tags surface as Info+Raw.
-		ae.Info = payload
-	}
-
-	ev := Event{Kind: kind, ChanID: 0, Channel: "auth", Auth: ae, Raw: []any{0, tag, payload}}
-	if sub != nil {
-		c.deliverTo(sub, ev)
-	} else {
-		c.emitLifecycle(ev)
-	}
-}
-
 // decodeEntityList decodes either a single entity row or a
 // snapshot list of rows.
 func decodeEntityList[T any](payload any, dec func([]any) (T, error)) ([]T, error) {
@@ -813,7 +631,7 @@ func decodeEntityList[T any](payload any, dec func([]any) (T, error)) ([]T, erro
 		for _, item := range arr {
 			row, ok := item.([]any)
 			if !ok {
-				continue
+				return nil, &types.ProtocolError{Message: "invalid entity snapshot row"}
 			}
 			v, err := dec(row)
 			if err != nil {
@@ -874,34 +692,49 @@ func (c *Client) deliverError(chanID int64, err error) {
 // never silently dropped. The wg protocol prevents
 // send-on-closed panics.
 func (c *Client) deliverTo(sub *Subscription, ev Event) {
+	stop := sub.deliveryDone()
 	sub.mu.Lock()
-	if sub.closed {
+	slow := false
+	defer func() {
 		sub.mu.Unlock()
+		if slow {
+			c.mu.Lock()
+			delete(c.subs, sub.chanID)
+			delete(c.books, sub.chanID)
+			delete(c.byKey, sub.req.cacheKey())
+			delete(c.reqs, sub.req.cacheKey())
+			delete(c.pending, sub.req.cacheKey())
+			c.mu.Unlock()
+			_ = c.sendJSON(map[string]any{"event": "unsubscribe", "chanId": sub.chanID})
+		}
+	}()
+	if sub.closed {
 		return
 	}
-	sub.wg.Add(1)
-	sub.mu.Unlock()
-	defer sub.wg.Done()
 
 	if c.cfg.Backpressure == BackpressureBlock {
-		sub.events <- ev
+		select {
+		case sub.events <- ev:
+		case <-c.ctx.Done():
+		case <-stop:
+		}
 		return
 	}
 	select {
 	case sub.events <- ev:
 	default:
-		// Buffer full → terminal ErrConsumerTooSlow enqueued
-		// behind the backlog (the consumer learns data was
-		// lost), then the subscription closes once drained.
-		// Async so a never-draining consumer cannot deadlock
-		// the read loop; released on client Close via done.
-		go func() {
-			select {
-			case sub.events <- Event{Kind: KindError, ChanID: sub.ChanID(), Err: types.ErrConsumerTooSlow}:
-				sub.closeEvents()
-			case <-c.done:
-			}
-		}()
+		// Reserve space for a terminal failure. No goroutine waits on a slow
+		// consumer, and the failure explicitly invalidates the queued data.
+		select {
+		case <-sub.events:
+		default:
+		}
+		sub.events <- Event{Kind: KindError, ChanID: sub.chanID, Err: types.ErrConsumerTooSlow}
+		sub.err = types.ErrConsumerTooSlow
+		sub.closed = true
+		sub.stopDelivery()
+		slow = true
+		close(sub.events)
 	}
 }
 
@@ -918,7 +751,7 @@ func reconnectDelay(base, cap time.Duration, attempt int) time.Duration {
 	if d <= 0 {
 		return 0
 	}
-	return time.Duration(rand.Int63n(int64(d) + 1))
+	return time.Duration(rand.Int63n(int64(d)))
 }
 
 // numeric extracts an int64 from a json.Number-bearing value.
@@ -970,36 +803,8 @@ func decLexeme(v any) string {
 
 // wsErrorEvent builds a typed error from a server error object.
 func wsErrorEvent(m map[string]any) error {
-	msg, _ := m["msg"].(string)
 	code := int64From(m["code"])
-	return &types.WebSocketError{Op: "event", Message: msg + " (code " + itoa64(code) + ")"}
+	return &types.WebSocketError{Op: "event", Message: "server rejected event (code " + itoa64(code) + ")"}
 }
 
-func safeURL(u string) string { return u }
-
-// thin wrappers delegating to market decoders (the market
-// package's decoders are unexported by design — these public
-// shims keep the wire contract in one place).
-func marketTickerFromWire(a []any, sym types.Symbol) (market.Ticker, error) {
-	return market.TickerFromWire(a, sym)
-}
-
-func marketTradeFromWire(a []any, sym types.Symbol) (market.Trade, error) {
-	return market.TradeFromWire(a, sym)
-}
-
-func candleFromWire(a []any) (market.Candle, error) {
-	return market.CandleFromWire(a)
-}
-
-func bookEntryFromWire(a []any) (market.BookEntry, error) {
-	return market.BookEntryFromWire(a)
-}
-
-func rawBookFromWire(a []any) (market.RawBookEntry, error) {
-	return market.RawBookEntryFromWire(a)
-}
-
-func fundingBookFromWire(a []any) (market.FundingBookEntry, error) {
-	return market.FundingBookEntryFromWire(a)
-}
+func safeURL(u string) string { return "[websocket endpoint]" }

@@ -39,24 +39,45 @@ type Client struct {
 	nonce  NonceProvider
 }
 
+// String keeps client options and authentication dependencies out of logs.
+func (c *Client) String() string { return "bitfinex.Client{<redacted>}" }
+
+// GoString redacts debug formatting.
+func (c *Client) GoString() string { return c.String() }
+
 // NewClient builds a client from functional options. Without
 // credentials the client is public-only — private calls return
 // ErrCredentialsMissing.
 func NewClient(opts ...Option) (*Client, error) {
 	o := defaultOptions()
-	for i, opt := range opts {
+	for _, opt := range opts {
 		if opt == nil {
 			continue
 		}
 		if err := opt(&o); err != nil {
 			return nil, err
 		}
-		_ = i
 	}
 
 	doer := o.httpDoer
 	if doer == nil {
-		doer = &http.Client{Timeout: o.timeout}
+		doer = &http.Client{Timeout: o.timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	} else if hc, ok := doer.(*http.Client); ok {
+		copyClient := *hc
+		original := hc.CheckRedirect
+		copyClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) > 0 && via[0].Header.Get("bfx-apikey") != "" {
+				return http.ErrUseLastResponse
+			}
+			if original != nil {
+				return original(req, via)
+			}
+			if len(via) >= 10 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		}
+		doer = &copyClient
 	}
 
 	var signer *auth.Signer
@@ -70,7 +91,7 @@ func NewClient(opts ...Option) (*Client, error) {
 	}
 
 	limiter := o.limiter
-	if limiter == nil {
+	if limiter == nil && !o.limiterSet {
 		limiter = ratelimit.New(o.rateLimits, 0)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"github.com/tigusigalpa/bitfinex-go/positions"
 	"github.com/tigusigalpa/bitfinex-go/types"
 	"github.com/tigusigalpa/bitfinex-go/wallets"
+	"strconv"
 )
 
 // Kind classifies a subscription event.
@@ -167,6 +168,11 @@ func (r SubscriptionRequest) validate() error {
 			return err
 		}
 	case "book":
+		switch r.Len {
+		case 0, 1, 25, 100, 250:
+		default:
+			return &types.ValidationError{Field: "len", Message: "book length must be 1, 25, 100 or 250"}
+		}
 		sym, err := types.ParseSymbol(r.Symbol)
 		if err != nil {
 			return err
@@ -220,19 +226,9 @@ func (r SubscriptionRequest) message() map[string]any {
 // cacheKey identifies the request for ack matching and
 // resubscribe bookkeeping.
 func (r SubscriptionRequest) cacheKey() string {
-	return r.Channel + "|" + r.Symbol + "|" + r.Prec + "|" + r.Freq + "|" + r.Key
+	return r.Channel + "|" + r.Symbol + "|" + r.Prec + "|" + r.Freq + "|" + r.Key + "|" + strconv.Itoa(r.Len)
 }
 
 func itoa64(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
+	return strconv.FormatInt(v, 10)
 }

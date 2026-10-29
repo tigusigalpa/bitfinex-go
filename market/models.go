@@ -65,6 +65,34 @@ type RawBookEntry struct {
 	Amount  types.Decimal `json:"amount"` // >0 bid, <0 ask
 }
 
+// RawFundingBookEntry is an R0 funding offer: ID, period, rate, amount.
+type RawFundingBookEntry struct {
+	OfferID int64         `json:"offer_id"`
+	Period  int64         `json:"period"`
+	Rate    types.Decimal `json:"rate"`
+	Amount  types.Decimal `json:"amount"`
+}
+
+// RawFundingBookFromWire decodes a raw funding book row.
+func RawFundingBookFromWire(a []any) (RawFundingBookEntry, error) {
+	var e RawFundingBookEntry
+	if err := wire.AssertMinLength(a, 4, "raw funding book"); err != nil {
+		return e, err
+	}
+	var err error
+	if e.OfferID, err = wire.MustInt(a, 0, "raw funding book"); err != nil {
+		return e, err
+	}
+	if e.Period, err = wire.MustInt(a, 1, "raw funding book"); err != nil {
+		return e, err
+	}
+	if e.Rate, err = wire.RequiredDecimal(a, 2); err != nil {
+		return e, err
+	}
+	e.Amount, err = wire.RequiredDecimal(a, 3)
+	return e, err
+}
+
 // FundingBookEntry is one level of an aggregated funding book.
 type FundingBookEntry struct {
 	Rate   types.Decimal `json:"rate"`
@@ -241,10 +269,10 @@ func tradeFromWire(a []any, sym types.Symbol) (Trade, error) {
 		} else {
 			t.MTS = mts
 		}
-		if t.Amount, err = wire.DecOr(a, 2, types.Decimal{}); err != nil {
+		if t.Amount, err = wire.RequiredDecimal(a, 2); err != nil {
 			return t, err
 		}
-		if t.Rate, err = wire.DecOr(a, 3, types.Decimal{}); err != nil {
+		if t.Rate, err = wire.RequiredDecimal(a, 3); err != nil {
 			return t, err
 		}
 		t.Period = wire.IntOr(a, 4, 0)
@@ -259,10 +287,10 @@ func tradeFromWire(a []any, sym types.Symbol) (Trade, error) {
 	} else {
 		t.MTS = mts
 	}
-	if t.Amount, err = wire.DecOr(a, 2, types.Decimal{}); err != nil {
+	if t.Amount, err = wire.RequiredDecimal(a, 2); err != nil {
 		return t, err
 	}
-	if t.Price, err = wire.DecOr(a, 3, types.Decimal{}); err != nil {
+	if t.Price, err = wire.RequiredDecimal(a, 3); err != nil {
 		return t, err
 	}
 	return t, nil
@@ -270,7 +298,7 @@ func tradeFromWire(a []any, sym types.Symbol) (Trade, error) {
 
 func candleFromWire(a []any) (Candle, error) {
 	c := Candle{}
-	if err := wire.AssertMinLength(a, 5, "candle"); err != nil {
+	if err := wire.AssertMinLength(a, 6, "candle"); err != nil {
 		return c, err
 	}
 	var err error
@@ -279,19 +307,19 @@ func candleFromWire(a []any) (Candle, error) {
 	} else {
 		c.MTS = mts
 	}
-	if c.Open, err = wire.DecOr(a, 1, types.Decimal{}); err != nil {
+	if c.Open, err = wire.RequiredDecimal(a, 1); err != nil {
 		return c, err
 	}
-	if c.Close, err = wire.DecOr(a, 2, types.Decimal{}); err != nil {
+	if c.Close, err = wire.RequiredDecimal(a, 2); err != nil {
 		return c, err
 	}
-	if c.High, err = wire.DecOr(a, 3, types.Decimal{}); err != nil {
+	if c.High, err = wire.RequiredDecimal(a, 3); err != nil {
 		return c, err
 	}
-	if c.Low, err = wire.DecOr(a, 4, types.Decimal{}); err != nil {
+	if c.Low, err = wire.RequiredDecimal(a, 4); err != nil {
 		return c, err
 	}
-	if c.Volume, err = wire.DecOr(a, 5, types.Decimal{}); err != nil {
+	if c.Volume, err = wire.RequiredDecimal(a, 5); err != nil {
 		return c, err
 	}
 	return c, nil
@@ -300,9 +328,10 @@ func candleFromWire(a []any) (Candle, error) {
 // BookLevel is a sum-type for REST book results: exactly one of
 // Entry/Raw/Funding is non-nil.
 type BookLevel struct {
-	Entry   *BookEntry        `json:"entry,omitempty"`
-	Raw     *RawBookEntry     `json:"raw,omitempty"`
-	Funding *FundingBookEntry `json:"funding,omitempty"`
+	Entry      *BookEntry           `json:"entry,omitempty"`
+	Raw        *RawBookEntry        `json:"raw,omitempty"`
+	Funding    *FundingBookEntry    `json:"funding,omitempty"`
+	RawFunding *RawFundingBookEntry `json:"raw_funding,omitempty"`
 }
 
 func bookEntryFromWire(a []any) (BookEntry, error) {
@@ -311,11 +340,13 @@ func bookEntryFromWire(a []any) (BookEntry, error) {
 		return e, err
 	}
 	var err error
-	if e.Price, err = wire.DecOr(a, 0, types.Decimal{}); err != nil {
+	if e.Price, err = wire.RequiredDecimal(a, 0); err != nil {
 		return e, err
 	}
-	e.Count = wire.IntOr(a, 1, 0)
-	if e.Amount, err = wire.DecOr(a, 2, types.Decimal{}); err != nil {
+	if e.Count, err = wire.MustInt(a, 1, "book entry"); err != nil {
+		return e, err
+	}
+	if e.Amount, err = wire.RequiredDecimal(a, 2); err != nil {
 		return e, err
 	}
 	return e, nil
@@ -327,11 +358,13 @@ func rawBookEntryFromWire(a []any) (RawBookEntry, error) {
 		return e, err
 	}
 	var err error
-	e.OrderID = wire.IntOr(a, 0, 0)
-	if e.Price, err = wire.DecOr(a, 1, types.Decimal{}); err != nil {
+	if e.OrderID, err = wire.MustInt(a, 0, "raw book entry"); err != nil {
 		return e, err
 	}
-	if e.Amount, err = wire.DecOr(a, 2, types.Decimal{}); err != nil {
+	if e.Price, err = wire.RequiredDecimal(a, 1); err != nil {
+		return e, err
+	}
+	if e.Amount, err = wire.RequiredDecimal(a, 2); err != nil {
 		return e, err
 	}
 	return e, nil
@@ -343,12 +376,12 @@ func fundingBookEntryFromWire(a []any) (FundingBookEntry, error) {
 		return e, err
 	}
 	var err error
-	if e.Rate, err = wire.DecOr(a, 0, types.Decimal{}); err != nil {
+	if e.Rate, err = wire.RequiredDecimal(a, 0); err != nil {
 		return e, err
 	}
 	e.Period = wire.IntOr(a, 1, 0)
 	e.Count = wire.IntOr(a, 2, 0)
-	if e.Amount, err = wire.DecOr(a, 3, types.Decimal{}); err != nil {
+	if e.Amount, err = wire.RequiredDecimal(a, 3); err != nil {
 		return e, err
 	}
 	return e, nil

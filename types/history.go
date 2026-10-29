@@ -1,5 +1,7 @@
 package types
 
+import "strconv"
+
 // Sort order values accepted by Bitfinex history endpoints.
 const (
 	SortAsc  = 1
@@ -63,23 +65,19 @@ func (q *HistoryQuery) Body() map[string]any {
 }
 
 func itoa(v int64) string {
-	if v == 0 {
-		return "0"
+	return strconv.FormatInt(v, 10)
+}
+
+// Validate checks the common history window; endpoint-specific maxima are separate.
+func (q *HistoryQuery) Validate() error {
+	if q == nil {
+		return nil
 	}
-	neg := v < 0
-	if neg {
-		v = -v
+	if q.Limit < 0 || (q.Sort != 0 && q.Sort != SortAsc && q.Sort != SortDesc) {
+		return &ValidationError{Field: "history", Message: "limit must be non-negative and sort must be 1 or -1"}
 	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
+	if (q.Start != nil && *q.Start < 0) || (q.End != nil && *q.End < 0) || (q.Start != nil && q.End != nil && *q.Start > *q.End) {
+		return &ValidationError{Field: "history", Message: "invalid start/end window"}
 	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return nil
 }

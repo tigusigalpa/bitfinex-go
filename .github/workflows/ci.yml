@@ -3,86 +3,99 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    name: test (go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        # two most recent stable Go versions
-        go: ["1.24", "1.25"]
+        go: ["1.26.x", "1.27.x"]
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
-      - name: go mod tidy check
+      - name: Dependency and formatting checks
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
-      - name: gofmt
-        run: test -z "$(gofmt -l .)"
-      - name: go vet
-        run: go vet ./...
-      - name: build (+examples)
-        run: go build ./... && go build -o /dev/null ./examples/public_quickstart ./examples/private_readonly ./examples/websocket_ticker
-      - name: unit tests
-        run: go test ./...
-      - name: race
-        run: go test -race ./...
-      - name: fuzz smoke
-        run: go test -run=Fuzz -fuzztime=15s ./internal/wire/
-      - name: coverage gate
+          test -z "$(gofmt -l .)"
+      - name: Vet and build (including examples)
         run: |
-          go test -coverprofile=cover.out ./... >/dev/null
+          go vet ./...
+          go build ./...
+      - name: Unit and race tests
+        run: |
+          go test -timeout=120s ./...
+          go test -race -timeout=120s ./...
+      - name: Active fuzz smoke
+        run: |
+          go test -run='^$' -fuzz='^FuzzWireDecoder$' -fuzztime=5s ./internal/wire
+          go test -run='^$' -fuzz='^FuzzErrorEnvelope$' -fuzztime=5s ./internal/httpx
+          go test -run='^$' -fuzz='^FuzzDecimal$' -fuzztime=5s ./types
+          go test -run='^$' -fuzz='^FuzzWebSocketParser$' -fuzztime=5s ./websocket
+      - name: Coverage gate
+        run: |
+          go test -coverpkg=./... -coverprofile=cover.out ./... >/dev/null
           total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "total coverage: $total%"
           awk -v t="$total" 'BEGIN{exit !(t+0>=55)}'
 
-  lint:
-    name: staticcheck
+  analysis:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: "1.25"
-      - uses: dominikh/staticcheck-action@f4f6a285f14d4b215e51c3dbef8ec55b4b7d06b9 # v1.3.1
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          version: "2025.1"
-
-  security:
-    name: security
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
-        with:
-          go-version: "1.25"
-      - name: govulncheck
+          go-version: "1.27.x"
+          check-latest: true
+      - name: Staticcheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+          staticcheck ./...
+      - name: Govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
-      - name: secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: "false"
 
   codeql:
-    name: codeql
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
+      contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - uses: github/codeql-action/init@0499c5150ee14c0ea1f7c3adf4b9ec01ed16ea99 # v3.28.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.x"
+      - uses: github/codeql-action/init@793b778da9c9275a0f276522b27cb5fc14bba279 # v4
         with:
           languages: go
-      - uses: github/codeql-action/analyze@0499c5150ee14c0ea1f7c3adf4b9ec01ed16ea99 # v3.28.0
+          build-mode: manual
+      - run: go build ./...
+      - uses: github/codeql-action/analyze@793b778da9c9275a0f276522b27cb5fc14bba279 # v4
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

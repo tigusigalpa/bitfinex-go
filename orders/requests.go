@@ -19,7 +19,7 @@ type ClientOrderID struct {
 
 // NewClientOrderID builds a ClientOrderID for the current date.
 func NewClientOrderID(id int64, day time.Time) (ClientOrderID, error) {
-	if id <= 0 {
+	if id <= 0 || id > (1<<45)-1 {
 		return ClientOrderID{}, &types.ValidationError{Field: "cid", Message: "client order id must be positive"}
 	}
 	return ClientOrderID{ID: id, Date: day.UTC().Format("2006-01-02")}, nil
@@ -47,12 +47,55 @@ type SubmitRequest struct {
 
 // Validate enforces the local contract before sending.
 func (r SubmitRequest) Validate() error {
-	if _, err := types.ParseSymbol(r.Symbol); err != nil {
+	if sym, err := types.ParseSymbol(r.Symbol); err != nil {
 		return err
+	} else if !sym.IsTrading() {
+		return &types.ValidationError{Field: "symbol", Message: "orders require a trading symbol"}
 	}
 	t := strings.ToUpper(strings.TrimSpace(r.Type))
 	if t == "" {
 		return &types.ValidationError{Field: "type", Message: "order type is required"}
+	}
+	if t != r.Type {
+		return &types.ValidationError{Field: "type", Message: "order type must use its canonical uppercase form"}
+	}
+	switch strings.TrimPrefix(t, "EXCHANGE ") {
+	case "LIMIT", "MARKET", "STOP", "STOP LIMIT", "TRAILING STOP", "FOK", "IOC":
+	default:
+		return &types.ValidationError{Field: "type", Message: "unsupported order type"}
+	}
+	for _, d := range []*types.Decimal{r.Price, r.PriceTrailing, r.PriceAuxLimit, r.PriceOCOStop} {
+		if d != nil && (!d.IsValid() || d.Sign() <= 0) {
+			return &types.ValidationError{Field: "price", Message: "prices must be positive decimals"}
+		}
+	}
+	if strings.Contains(t, "TRAILING STOP") && r.PriceTrailing == nil {
+		return &types.ValidationError{Field: "price_trailing", Message: "required for trailing stops"}
+	}
+	if strings.Contains(t, "STOP LIMIT") && r.PriceAuxLimit == nil {
+		return &types.ValidationError{Field: "price_aux_limit", Message: "required for stop limit orders"}
+	}
+	if r.PriceAuxLimit != nil && !strings.Contains(t, "STOP LIMIT") {
+		return &types.ValidationError{Field: "price_aux_limit", Message: "only valid for stop limit orders"}
+	}
+	if r.CID != nil {
+		if err := r.CID.Validate(); err != nil {
+			return err
+		}
+	}
+	if r.Tif != nil && r.TifDate != nil {
+		return &types.ValidationError{Field: "tif", Message: "choose one time-in-force representation"}
+	}
+	if r.TifDate != nil {
+		if _, err := time.Parse("2006-01-02 15:04:05", *r.TifDate); err != nil {
+			return &types.ValidationError{Field: "tif", Message: "invalid UTC datetime"}
+		}
+	}
+	if r.Leverage != nil && (*r.Leverage < 1 || *r.Leverage > 100 || !strings.Contains(r.Symbol, "F0:") || strings.HasPrefix(t, "EXCHANGE ")) {
+		return &types.ValidationError{Field: "lev", Message: "leverage 1..100 is for derivative orders only"}
+	}
+	if r.GID != nil && (*r.GID < 0 || *r.GID > (1<<45)-1) {
+		return &types.ValidationError{Field: "gid", Message: "group id out of int45 range"}
 	}
 	if !r.Amount.IsValid() || r.Amount.IsZero() {
 		return &types.ValidationError{Field: "amount", Message: "amount must be a non-zero decimal"}
@@ -77,10 +120,10 @@ func (r SubmitRequest) Body() map[string]any {
 	body := map[string]any{
 		"type":   r.Type,
 		"symbol": r.Symbol,
-		"amount": r.Amount.String(),
+		"amount": r.Amount.CanonicalString(),
 	}
 	if r.Price != nil {
-		body["price"] = r.Price.String()
+		body["price"] = r.Price.CanonicalString()
 	}
 	if r.CID != nil {
 		body["cid"] = r.CID.ID
@@ -96,13 +139,13 @@ func (r SubmitRequest) Body() map[string]any {
 		body["lev"] = *r.Leverage
 	}
 	if r.PriceTrailing != nil {
-		body["price_trailing"] = r.PriceTrailing.String()
+		body["price_trailing"] = r.PriceTrailing.CanonicalString()
 	}
 	if r.PriceAuxLimit != nil {
-		body["price_aux_limit"] = r.PriceAuxLimit.String()
+		body["price_aux_limit"] = r.PriceAuxLimit.CanonicalString()
 	}
 	if r.PriceOCOStop != nil {
-		body["price_oco_stop"] = r.PriceOCOStop.String()
+		body["price_oco_stop"] = r.PriceOCOStop.CanonicalString()
 	}
 	if r.Tif != nil {
 		body["tif"] = r.Tif.UTC().Format("2006-01-02 15:04:05")
@@ -136,6 +179,19 @@ func (r UpdateRequest) Validate() error {
 	if r.ID <= 0 {
 		return &types.ValidationError{Field: "id", Message: "order id must be positive"}
 	}
+	if r.Amount != nil && r.Delta != nil {
+		return &types.ValidationError{Field: "amount", Message: "amount and delta are mutually exclusive"}
+	}
+	for _, d := range []*types.Decimal{r.Amount, r.Price, r.Delta, r.PriceAuxLimit, r.PriceTrailing} {
+		if d != nil && !d.IsValid() {
+			return &types.ValidationError{Field: "decimal", Message: "absent decimal in patch"}
+		}
+	}
+	for _, d := range []*types.Decimal{r.Price, r.PriceAuxLimit, r.PriceTrailing} {
+		if d != nil && d.Sign() <= 0 {
+			return &types.ValidationError{Field: "price", Message: "price must be positive"}
+		}
+	}
 	return nil
 }
 
@@ -143,10 +199,10 @@ func (r UpdateRequest) Validate() error {
 func (r UpdateRequest) Body() map[string]any {
 	body := map[string]any{"id": r.ID}
 	if r.Amount != nil {
-		body["amount"] = r.Amount.String()
+		body["amount"] = r.Amount.CanonicalString()
 	}
 	if r.Price != nil {
-		body["price"] = r.Price.String()
+		body["price"] = r.Price.CanonicalString()
 	}
 	if r.CID != nil {
 		body["cid"] = r.CID.ID
@@ -159,13 +215,13 @@ func (r UpdateRequest) Body() map[string]any {
 		body["flags"] = *r.Flags
 	}
 	if r.Delta != nil {
-		body["delta"] = r.Delta.String()
+		body["delta"] = r.Delta.CanonicalString()
 	}
 	if r.PriceAuxLimit != nil {
-		body["price_aux_limit"] = r.PriceAuxLimit.String()
+		body["price_aux_limit"] = r.PriceAuxLimit.CanonicalString()
 	}
 	if r.PriceTrailing != nil {
-		body["price_trailing"] = r.PriceTrailing.String()
+		body["price_trailing"] = r.PriceTrailing.CanonicalString()
 	}
 	if r.Tif != nil {
 		body["tif"] = *r.Tif
@@ -190,11 +246,14 @@ func ByClientOrderID(cid ClientOrderID) CancelRequest {
 
 // Validate enforces exactly one selector.
 func (r CancelRequest) Validate() error {
+	if r.ID != 0 && r.CID != nil {
+		return &types.ValidationError{Field: "selector", Message: "choose either id or cid"}
+	}
 	if r.ID > 0 {
 		return nil
 	}
-	if r.CID != nil && r.CID.ID > 0 && r.CID.Date != "" {
-		return nil
+	if r.ID == 0 && r.CID != nil {
+		return r.CID.Validate()
 	}
 	return &types.ValidationError{Field: "id", Message: "cancel requires either a server order id or a cid/cid_date pair"}
 }
@@ -204,7 +263,21 @@ func (r CancelRequest) Body() map[string]any {
 	if r.ID > 0 {
 		return map[string]any{"id": r.ID}
 	}
+	if r.CID == nil {
+		return map[string]any{}
+	}
 	return map[string]any{"cid": r.CID.ID, "cid_date": r.CID.Date}
+}
+
+// Validate checks the client order ID and UTC calendar date.
+func (c ClientOrderID) Validate() error {
+	if c.ID <= 0 || c.ID > (1<<45)-1 {
+		return &types.ValidationError{Field: "cid", Message: "client order id out of int45 range"}
+	}
+	if _, err := time.Parse("2006-01-02", c.Date); err != nil {
+		return &types.ValidationError{Field: "cid_date", Message: "expected YYYY-MM-DD"}
+	}
+	return nil
 }
 
 // MultiOp is one entry for POST /auth/w/order/multi — the "on",

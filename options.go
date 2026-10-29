@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/tigusigalpa/bitfinex-go/auth"
@@ -23,7 +26,7 @@ const (
 	DefaultPrivateRESTBase = "https://api.bitfinex.com/v2"
 	DefaultPublicWSURL     = "wss://api-pub.bitfinex.com/ws/2"
 	DefaultPrivateWSURL    = "wss://api.bitfinex.com/ws/2"
-	DefaultUserAgent       = "bitfinex-go/1.0 (+https://github.com/tigusigalpa/bitfinex-go)"
+	DefaultUserAgent       = "bitfinex-go/1.1.0 (+https://github.com/tigusigalpa/bitfinex-go)"
 )
 
 // HTTPDoer is the narrow transport dependency — *http.Client
@@ -61,6 +64,7 @@ type options struct {
 	userAgent   string
 	retry       retry.Policy
 	limiter     RateLimiter
+	limiterSet  bool
 	rateLimits  map[string]float64
 	nonce       NonceProvider
 	clock       Clock
@@ -114,7 +118,7 @@ func WithHTTPClient(c *http.Client) Option {
 // custom instrumentation).
 func WithHTTPDoer(d HTTPDoer) Option {
 	return func(o *options) error {
-		if d == nil {
+		if nilDependency(d) {
 			return &types.ValidationError{Field: "http_doer", Message: "must not be nil"}
 		}
 		o.httpDoer = d
@@ -184,7 +188,7 @@ func WithTimeout(d time.Duration) Option {
 // WithUserAgent overrides the User-Agent header.
 func WithUserAgent(ua string) Option {
 	return func(o *options) error {
-		if ua == "" {
+		if ua == "" || strings.ContainsAny(ua, "\r\n") {
 			return &types.ValidationError{Field: "user_agent", Message: "must not be empty"}
 		}
 		o.userAgent = ua
@@ -209,7 +213,11 @@ func WithRetryPolicy(maxAttempts int, base, maxDelay, maxElapsed time.Duration) 
 // NOT recommended for production.
 func WithRateLimiter(l RateLimiter) Option {
 	return func(o *options) error {
+		if l != nil && nilDependency(l) {
+			return &types.ValidationError{Field: "rate_limiter", Message: "typed nil dependency"}
+		}
 		o.limiter = l
+		o.limiterSet = true
 		return nil
 	}
 }
@@ -219,11 +227,14 @@ func WithRateLimiter(l RateLimiter) Option {
 func WithRateLimitProfile(overrides map[string]float64) Option {
 	return func(o *options) error {
 		for k, v := range overrides {
-			if v <= 0 {
+			if v < 1 || math.IsNaN(v) || math.IsInf(v, 0) {
 				return &types.ValidationError{Field: "rate_limits", Message: fmt.Sprintf("bucket %q must be >0", k)}
 			}
 		}
-		o.rateLimits = overrides
+		o.rateLimits = make(map[string]float64, len(overrides))
+		for k, v := range overrides {
+			o.rateLimits[k] = v
+		}
 		return nil
 	}
 }
@@ -233,7 +244,7 @@ func WithRateLimitProfile(overrides map[string]float64) Option {
 // process-local only.
 func WithNonceProvider(p NonceProvider) Option {
 	return func(o *options) error {
-		if p == nil {
+		if nilDependency(p) {
 			return &types.ValidationError{Field: "nonce_provider", Message: "must not be nil"}
 		}
 		o.nonce = p
@@ -245,7 +256,7 @@ func WithNonceProvider(p NonceProvider) Option {
 // provider. Tests only.
 func WithClock(c Clock) Option {
 	return func(o *options) error {
-		if c == nil {
+		if nilDependency(c) {
 			return &types.ValidationError{Field: "clock", Message: "must not be nil"}
 		}
 		o.clock = c
@@ -269,7 +280,7 @@ func WithLogger(l *slog.Logger) Option {
 // WithWSDialer injects a custom WebSocket dialer (tests/proxy).
 func WithWSDialer(d WebSocketDialer) Option {
 	return func(o *options) error {
-		if d == nil {
+		if nilDependency(d) {
 			return &types.ValidationError{Field: "ws_dialer", Message: "must not be nil"}
 		}
 		o.wsDialer = d
@@ -277,10 +288,22 @@ func WithWSDialer(d WebSocketDialer) Option {
 	}
 }
 
+func nilDependency(v any) bool {
+	if v == nil {
+		return true
+	}
+	r := reflect.ValueOf(v)
+	switch r.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return r.IsNil()
+	}
+	return false
+}
+
 func validateHTTPBase(u, field string) error {
 	parsed, err := url.Parse(u)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return &types.ValidationError{Field: field, Message: fmt.Sprintf("invalid base URL %q", u)}
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return &types.ValidationError{Field: field, Message: "invalid base URL (userinfo, query and fragment are forbidden)"}
 	}
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
 		return &types.ValidationError{Field: field, Message: fmt.Sprintf("scheme %q not allowed (want https; http only for tests/proxy)", parsed.Scheme)}
@@ -290,8 +313,8 @@ func validateHTTPBase(u, field string) error {
 
 func validateWSBase(u, field string) error {
 	parsed, err := url.Parse(u)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return &types.ValidationError{Field: field, Message: fmt.Sprintf("invalid WS URL %q", u)}
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return &types.ValidationError{Field: field, Message: "invalid WS URL (userinfo, query and fragment are forbidden)"}
 	}
 	if parsed.Scheme != "wss" && parsed.Scheme != "ws" {
 		return &types.ValidationError{Field: field, Message: fmt.Sprintf("scheme %q not allowed (want wss; ws only for tests/proxy)", parsed.Scheme)}

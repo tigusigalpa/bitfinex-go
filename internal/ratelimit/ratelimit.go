@@ -13,6 +13,7 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 
@@ -30,25 +31,13 @@ const CooldownSeconds = 60.0
 func DefaultLimits() map[string]float64 {
 	return map[string]float64{
 		"*":               10,
-		"public":          30,
 		"platform-status": 30,
 		"tickers":         90,
 		"ticker":          30,
 		"trades":          15,
 		"book":            90,
 		"stats":           15,
-		"candles":         60,
-		"conf":            60,
-		"calc":            90,
-		"wallets":         90,
-		"orders-read":     45,
-		"orders-write":    15,
-		"positions":       45,
-		"funding-read":    45,
-		"funding-write":   15,
-		"account-read":    45,
-		"account-write":   15,
-		"transfer":        15,
+		"candles":         30,
 		"withdraw":        10,
 	}
 }
@@ -65,11 +54,12 @@ type bucket struct {
 // available, and applies a >=60s cooldown after server-side
 // rate-limit rejection.
 type Limiter struct {
-	mu      sync.Mutex
-	limits  map[string]float64
-	buckets map[string]*bucket
-	now     func() time.Time
-	maxWait time.Duration
+	mu          sync.Mutex
+	limits      map[string]float64
+	buckets     map[string]*bucket
+	now         func() time.Time
+	maxWait     time.Duration
+	cooldownEnd time.Time
 }
 
 // New builds a Limiter. overrides add or replace limits.
@@ -77,7 +67,7 @@ type Limiter struct {
 func New(overrides map[string]float64, maxWait time.Duration) *Limiter {
 	limits := DefaultLimits()
 	for k, v := range overrides {
-		if v > 0 {
+		if v >= 1 && !math.IsInf(v, 0) && !math.IsNaN(v) {
 			limits[k] = v
 		}
 	}
@@ -99,42 +89,41 @@ func (l *Limiter) SetNow(f func() time.Time) { l.now = f }
 // ends. Returns *types.RateLimitError when the required wait
 // would exceed the configured max wait.
 func (l *Limiter) Wait(ctx context.Context, bucketName string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	limit := l.limits[bucketName]
-	if limit <= 0 {
-		limit = l.limits["*"]
-	}
-
-	l.mu.Lock()
-	b := l.bucketLocked(bucketName)
-	now := l.now()
-
-	wait := time.Duration(0)
-	if b.cooldownEnd.After(now) {
-		wait = b.cooldownEnd.Sub(now)
-	}
-	l.refillLocked(b, limit, now)
-	if b.tokens < 1 {
-		need := time.Duration((1 - b.tokens) / (limit / 60.0) * float64(time.Second))
-		if need > wait {
-			wait = need
+	started := time.Now()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-	}
-
-	if wait > l.maxWait {
+		l.mu.Lock()
+		limit := l.limits[bucketName]
+		if limit < 1 {
+			limit = l.limits["*"]
+		}
+		b := l.bucketLocked(bucketName)
+		now := l.now()
+		l.refillLocked(b, limit, now)
+		wait := b.cooldownEnd.Sub(now)
+		if global := l.cooldownEnd.Sub(now); global > wait {
+			wait = global
+		}
+		if b.tokens < 1 {
+			need := time.Duration((1 - b.tokens) / (limit / 60) * float64(time.Second))
+			if need < time.Nanosecond {
+				need = time.Nanosecond
+			}
+			if need > wait {
+				wait = need
+			}
+		}
+		if wait <= 0 {
+			b.tokens--
+			l.mu.Unlock()
+			return nil
+		}
 		l.mu.Unlock()
-		return &types.RateLimitError{APIError: types.APIError{
-			StatusCode: 0,
-			Message:    "local rate limiter wait would exceed maximum",
-			Endpoint:   bucketName,
-			RetryAfter: wait,
-		}}
-	}
-	l.mu.Unlock()
-
-	if wait > 0 {
+		if wait > l.maxWait-time.Since(started) {
+			return &types.RateLimitError{APIError: types.APIError{Message: "local rate limiter wait would exceed maximum", Endpoint: bucketName, RetryAfter: wait}}
+		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -142,27 +131,21 @@ func (l *Limiter) Wait(ctx context.Context, bucketName string) error {
 			return ctx.Err()
 		case <-timer.C:
 		}
+		// Recheck under lock: another waiter or a new server penalty may
+		// have changed availability while this caller was asleep.
 	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	b = l.bucketLocked(bucketName)
-	l.refillLocked(b, limit, l.now())
-	if b.tokens < 1 {
-		b.tokens = 0
-		return &types.RateLimitError{APIError: types.APIError{
-			Message:  "local rate limiter depleted",
-			Endpoint: bucketName,
-		}}
-	}
-	b.tokens--
-	return nil
 }
 
 // Penalize applies a cooldown of at least CooldownSeconds after
 // the server rejects with ERR_RATE_LIMIT/429. retryAfter
 // (seconds) extends the cooldown when the server asks for more.
 func (l *Limiter) Penalize(bucketName string, retryAfterSeconds float64) {
+	if math.IsNaN(retryAfterSeconds) || math.IsInf(retryAfterSeconds, 0) {
+		retryAfterSeconds = 0
+	}
+	if retryAfterSeconds > 86400 {
+		retryAfterSeconds = 86400
+	}
 	cd := CooldownSeconds
 	if retryAfterSeconds > cd {
 		cd = retryAfterSeconds
@@ -170,7 +153,13 @@ func (l *Limiter) Penalize(bucketName string, retryAfterSeconds float64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	b := l.bucketLocked(bucketName)
-	b.cooldownEnd = l.now().Add(time.Duration(cd * float64(time.Second)))
+	until := l.now().Add(time.Duration(cd * float64(time.Second)))
+	if until.After(b.cooldownEnd) {
+		b.cooldownEnd = until
+	}
+	if until.After(l.cooldownEnd) {
+		l.cooldownEnd = until
+	}
 	b.tokens = 0
 }
 
@@ -180,7 +169,10 @@ func (l *Limiter) AvailabilityDelay(bucketName string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	b := l.bucketLocked(bucketName)
-	d := time.Until(b.cooldownEnd)
+	d := b.cooldownEnd.Sub(l.now())
+	if global := l.cooldownEnd.Sub(l.now()); global > d {
+		d = global
+	}
 	if d < 0 {
 		return 0
 	}

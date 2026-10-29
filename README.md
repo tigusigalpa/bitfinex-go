@@ -1,6 +1,6 @@
 # bitfinex-go
 
-Unofficial, production-grade Go client library for the **Bitfinex API v2** (REST + WebSocket).
+Unofficial Go client library for the **Bitfinex API v2** (REST + WebSocket).
 
 > **Unofficial client library; not affiliated with, endorsed by, or sponsored by Bitfinex.**
 
@@ -10,10 +10,15 @@ Unofficial, production-grade Go client library for the **Bitfinex API v2** (REST
 - API coverage and status per endpoint: [docs/endpoint-coverage.md](docs/endpoint-coverage.md)
 - Only **API v2** is supported. REST v1 is intentionally excluded.
 
+The v1.1.0 release hardens signing, HTTP errors, validation and WebSocket lifecycle.
+Coverage is incomplete: several legacy endpoints still return raw data, and history
+methods fetch one page. Review the [audit and remaining limitations](docs/review-v1.1.0.md)
+and [upgrade notes](docs/upgrade-v1.1.0.md) before using private write operations.
+
 ## Install
 
 ```bash
-go get github.com/tigusigalpa/bitfinex-go
+go get github.com/tigusigalpa/bitfinex-go@v1.1.0
 ```
 
 ## Quickstart — public, read-only
@@ -65,6 +70,11 @@ A client without credentials works for all public endpoints; private calls retur
 All money, prices, amounts, rates, fees, balances and P/L use `bitfinex.Decimal`, an immutable
 value that preserves the exact wire lexeme. JSON decoding uses `UseNumber` throughout; nothing
 money-related ever passes through `float64`. Marshal produces canonical decimal strings.
+`String()` preserves the input lexeme; `CanonicalString()` and outgoing JSON remove
+redundant signs, zeros and exponent notation. Inputs are bounded to 1024 characters
+and exponents in [-1024, 1024], with an expanded representation of at most 1024
+characters, to prevent excessive allocation from untrusted data.
+Absent decimal fields marshal as `null`.
 
 ```go
 price, _ := bitfinex.NewDecimal("65000.50")
@@ -95,9 +105,9 @@ resp, err := client.Orders.History(ctx, "", query)
 
 ## Rate limits and retries
 
-- Endpoint-aware token buckets (conservative defaults in the official 10–90 req/min range;
+- Endpoint-aware token buckets (unknown/shared endpoint groups default to 10 req/min;
   override via `WithRateLimitProfile` or inject `WithRateLimiter`).
-- After `ERR_RATE_LIMIT`/HTTP 429 the affected bucket cools down **≥ 60 seconds**
+- After `ERR_RATE_LIMIT`/HTTP 429 all buckets in this client cool down **≥ 60 seconds**
   (`Retry-After` honored when longer).
 - Retries: only **classified idempotent reads** (DNS/connect/read timeouts, HTTP
   408/429/5xx), capped exponential backoff with full jitter, bounded attempts and elapsed
@@ -106,6 +116,11 @@ resp, err := client.Orders.History(ctx, "", query)
   transfers, withdrawals, invoices, alerts, settings. An ambiguous outcome may already have
   mutated state. Reconcile with `orders.ClientOrderID` (`cid`/`cid_date`) instead of
   resubmitting.
+
+Limits are local to each client; applications sharing an IP/key must coordinate
+their aggregate traffic. Retry elapsed budgets include limiter waits and I/O.
+Signed redirects are refused by the built-in and injected `*http.Client`; custom
+`HTTPDoer` implementations must enforce equivalent redirect and context behavior.
 
 ## WebSocket
 
@@ -117,7 +132,11 @@ if err := ws.ConnectPublic(ctx, websocket.FlagSeqAll|websocket.FlagChecksum); er
 	log.Fatal(err)
 }
 sub, err := ws.Subscribe(ctx, websocket.SubscribeBook("tBTCUSD", "P0", "F0", 25))
+if err != nil {
+	log.Fatal(err)
+}
 for ev := range sub.Events() { /* snapshots → deltas, heartbeats, checksums */ }
+if err := sub.Err(); err != nil { /* handle terminal subscription failure */ }
 ```
 
 - Public channels: `ticker`, `trades`, `book` (P0–P4 aggregated **and** R0 raw — different
@@ -127,14 +146,23 @@ for ev := range sub.Events() { /* snapshots → deltas, heartbeats, checksums */
   strictly opt-in. All chanId-0 streams (`os/on/…`, `ps/…`, `te/tu`, `fo*`, `fc*`, `fl*`,
   `ws/wu`, `bu`, `miu`, `fiu`, `fte/ftu`, `n`) arrive as typed `AuthEvent`s; typed inputs
   `on/ou/oc/oc_multi/ox_multi/fon/foc/calc` are provided.
-- Integrity mode (recommended for books): `FlagSeqAll` (65536) + `FlagChecksum` (131072)
+- Integrity mode (for trading books): `FlagSeqAll` (65536) + `FlagChecksum` (131072)
   give sequence-gap detection and CRC32 top-25 book validation; gaps/mismatches trigger an
-  automatic resync.
-- Reconnects use capped full-jitter backoff, re-auth with a fresh nonce, and confirmed
-  re-subscribe of every tracked channel — no goroutine leaks, no connection storms.
+  a connection reset and fresh snapshots for all tracked channels. Discard local
+  derived state after integrity errors and rebuild it from the new snapshots.
+  Funding-book checksum semantics remain unverified.
+- Reconnects use capped full-jitter backoff with a three-second minimum between
+  connection attempts per client, fresh-nonce authentication, and subscription ack
+  tracking. Multiple clients require application-level connection pacing.
 - `BackpressurePolicy`: the default `BackpressureStop` emits terminal
-  `ErrConsumerTooSlow` and closes a lagging subscription; `BackpressureBlock` applies real
+  `ErrConsumerTooSlow`, invalidates buffered data and closes a lagging subscription;
+  a queued event may be replaced by the terminal error. `Subscription.Err()` also
+  exposes the failure. `BackpressureBlock` applies real
   backpressure (blocks the shared read loop — use with care). Nothing is silently dropped.
+
+Canceling `Connect*` during the initial handshake closes the client. After successful
+connection, its lifetime is owned by `Close()`. Account snapshots are buffered before
+`ConnectAuth` returns; call `SubscribeAccount()` promptly and drain the stream.
 
 ## Errors
 
@@ -166,6 +194,8 @@ docs/      endpoint coverage, audit
 This is **v1** (`github.com/tigusigalpa/bitfinex-go`, no `/vN` suffix). Breaking changes
 will require a `/v2` module path, tag `v2.x.y`, updated examples and an upgrade guide —
 per SemVer and the project's [CHANGELOG.md](CHANGELOG.md). Tags are never rewritten.
+The module declares Go 1.22; current CI tests the latest patches of Go 1.26 and 1.27.
+Use a supported, patched Go toolchain in production.
 
 ## Security
 

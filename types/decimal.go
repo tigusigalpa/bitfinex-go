@@ -1,15 +1,18 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 // Decimal is an immutable exact decimal value. It preserves the
 // original lexeme, so values never pass through float64 and
-// marshal back byte-identical. Use it for every money, price,
+// String returns the original lexeme; JSON uses a canonical exact string.
+// Use it for every money, price,
 // amount, rate, fee, balance and P/L field.
 //
 // The zero value is invalid for arithmetic; construct via
@@ -27,8 +30,38 @@ var DecimalZero = MustDecimal("0")
 // ".5" or "1e-8". The input is validated strictly; leading/trailing
 // whitespace is rejected to keep wire representations canonical.
 func NewDecimal(s string) (Decimal, error) {
-	if s == "" || !decimalRe.MatchString(s) {
-		return Decimal{}, fmt.Errorf("bitfinex: invalid decimal lexeme %q", abbrev(s))
+	if s == "" || len(s) > 1024 || !decimalRe.MatchString(s) {
+		return Decimal{}, fmt.Errorf("bitfinex: invalid decimal lexeme")
+	}
+	mantissa := strings.TrimLeft(s, "+-")
+	exponent := int64(0)
+	if i := strings.IndexAny(mantissa, "eE"); i >= 0 {
+		exp, err := strconv.ParseInt(mantissa[i+1:], 10, 32)
+		if err != nil || exp < -1024 || exp > 1024 {
+			return Decimal{}, fmt.Errorf("bitfinex: decimal exponent out of range")
+		}
+		exponent = exp
+		mantissa = mantissa[:i]
+	}
+	point := strings.IndexByte(mantissa, '.')
+	digits := len(mantissa)
+	if point < 0 {
+		point = digits
+	} else {
+		digits--
+	}
+	point += int(exponent)
+	expanded := digits + 1
+	if point <= 0 {
+		expanded = 2 - point + digits
+	} else if point >= digits {
+		expanded = point
+	}
+	if strings.HasPrefix(s, "-") {
+		expanded++
+	}
+	if expanded > 1024 {
+		return Decimal{}, fmt.Errorf("bitfinex: expanded decimal exceeds 1024 characters")
 	}
 	return Decimal{lex: s}, nil
 }
@@ -65,10 +98,13 @@ func (d Decimal) Cmp(o Decimal) int { return d.rat().Cmp(o.rat()) }
 
 // Neg returns -d.
 func (d Decimal) Neg() Decimal {
+	if !d.IsValid() {
+		return Decimal{}
+	}
 	if strings.HasPrefix(d.lex, "-") {
 		return Decimal{lex: d.lex[1:]}
 	}
-	return Decimal{lex: "-" + d.lex}
+	return Decimal{lex: "-" + strings.TrimPrefix(d.lex, "+")}
 }
 
 // Abs returns |d|.
@@ -96,10 +132,22 @@ func (d Decimal) Float64() float64 {
 }
 
 // MarshalJSON emits the decimal as a JSON string ("123.45"), the
-// representation Bitfinex documents for money fields. The lexeme
-// is preserved byte-for-byte — no float round-trip ever occurs.
+// representation used for money fields. Redundant signs/zeros/exponents
+// are normalized exactly; absent values emit null. No float round-trip occurs.
 func (d Decimal) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + d.lex + `"`), nil
+	if !d.IsValid() {
+		return []byte("null"), nil
+	}
+	return json.Marshal(d.CanonicalString())
+}
+
+// CanonicalString returns the exact plain decimal with redundant zeros removed.
+// String continues to return the original server lexeme.
+func (d Decimal) CanonicalString() string {
+	if !d.IsValid() {
+		return ""
+	}
+	return decFromRat(d.rat()).lex
 }
 
 // UnmarshalJSON accepts a JSON string or a bare JSON number and
@@ -110,7 +158,16 @@ func (d *Decimal) UnmarshalJSON(b []byte) error {
 		*d = Decimal{}
 		return nil
 	}
-	s = strings.Trim(s, `"`)
+	if !json.Valid(b) {
+		return fmt.Errorf("bitfinex: invalid decimal JSON")
+	}
+	if strings.HasPrefix(s, `"`) {
+		var err error
+		s, err = strconv.Unquote(s)
+		if err != nil {
+			return fmt.Errorf("bitfinex: invalid decimal JSON string")
+		}
+	}
 	nd, err := NewDecimal(s)
 	if err != nil {
 		return err

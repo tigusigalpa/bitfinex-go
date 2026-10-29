@@ -11,9 +11,11 @@ package httpx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -95,7 +97,7 @@ func (t *Transport) GetPublic(ctx context.Context, path string, query map[string
 		}
 		u += "?" + q.Encode()
 	}
-	return t.send(ctx, func() (*http.Request, error) {
+	return t.send(ctx, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return nil, err
@@ -113,7 +115,7 @@ func (t *Transport) PostPublic(ctx context.Context, path string, body any, rc Re
 	if err != nil {
 		return nil, err
 	}
-	return t.send(ctx, func() (*http.Request, error) {
+	return t.send(ctx, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(string(rawBody)))
 		if err != nil {
 			return nil, err
@@ -150,7 +152,7 @@ func (t *Transport) PostAuth(ctx context.Context, apiPath string, body any, rc R
 	urlPath := strings.TrimPrefix(apiPath, "v2/")
 	u := base + "/" + urlPath
 
-	return t.send(ctx, func() (*http.Request, error) {
+	return t.send(ctx, func(ctx context.Context) (*http.Request, error) {
 		// Fresh nonce per attempt: the signature input must match
 		// the transmitted nonce exactly.
 		nonce, err := t.cfg.NonceProvider.Next(ctx)
@@ -177,8 +179,13 @@ func (t *Transport) PostAuth(ctx context.Context, apiPath string, body any, rc R
 // send runs the attempt loop: limiter wait → build request
 // (signing happens inside build for signed calls) → do →
 // classify → maybe retry with bounded jittered backoff.
-func (t *Transport) send(ctx context.Context, build func() (*http.Request, error), endpoint string, rc RequestContext) (*Result, error) {
+func (t *Transport) send(ctx context.Context, build func(ctx context.Context) (*http.Request, error), endpoint string, rc RequestContext) (*Result, error) {
 	startedAt := time.Now()
+	if rc.Idempotent && t.cfg.Retry.MaxElapsed > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, t.cfg.Retry.MaxElapsed)
+		defer cancel()
+	}
 	var lastErr error
 
 	for attempt := 1; ; attempt++ {
@@ -191,11 +198,12 @@ func (t *Transport) send(ctx context.Context, build func() (*http.Request, error
 			}
 		}
 
-		req, err := build()
+		req, err := build(ctx)
 		if err != nil {
 			// Signing/nonce/validation failures are never retried.
 			return nil, err
 		}
+		req = req.WithContext(ctx)
 		if t.cfg.UserAgent != "" {
 			req.Header.Set("User-Agent", t.cfg.UserAgent)
 		}
@@ -206,9 +214,15 @@ func (t *Transport) send(ctx context.Context, build func() (*http.Request, error
 				return nil, ctxErr
 			}
 			lastErr = &types.TransportError{Op: req.Method, Endpoint: endpoint, Err: err}
+		} else if resp == nil || resp.Body == nil {
+			return nil, &types.ProtocolError{Message: "HTTP transport returned no response body"}
 		} else {
-			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+			const maxResponseBytes = 4 << 20
+			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 			resp.Body.Close()
+			if len(raw) > maxResponseBytes {
+				return nil, &types.ProtocolError{Message: "HTTP response exceeded 4 MiB limit"}
+			}
 			if readErr != nil {
 				lastErr = &types.TransportError{Op: "read", Endpoint: endpoint, Err: readErr}
 			} else {
@@ -227,6 +241,13 @@ func (t *Transport) send(ctx context.Context, build func() (*http.Request, error
 		}
 
 		delay := t.cfg.Retry.DelayForAttempt(attempt)
+		var apiErr *types.APIError
+		if errors.As(lastErr, &apiErr) && apiErr.RetryAfter > delay {
+			delay = apiErr.RetryAfter
+		}
+		if t.cfg.Retry.MaxElapsed > 0 && time.Since(startedAt)+delay >= t.cfg.Retry.MaxElapsed {
+			return nil, lastErr
+		}
 		t.cfg.Logger.Debug("retrying request",
 			"endpoint", endpoint, "attempt", attempt+1, "delay", delay.String())
 		timer := time.NewTimer(delay)
@@ -244,7 +265,7 @@ func (t *Transport) send(ctx context.Context, build func() (*http.Request, error
 // is detected even on 2xx statuses.
 func (t *Transport) classify(resp *http.Response, raw []byte, endpoint string, attempt int, rc RequestContext) (*Result, error) {
 	status := resp.StatusCode
-	summary := summarize(raw)
+	summary := "[response body redacted]"
 	retryAfter := retryAfterSeconds(resp.Header.Get("Retry-After"))
 
 	var decoded any
@@ -257,8 +278,10 @@ func (t *Transport) classify(resp *http.Response, raw []byte, endpoint string, a
 	// Bitfinex error envelope: ["error", <code:int>, "<text>"]
 	var bfxCode int
 	var bfxText string
+	isEnvelope := false
 	if arr, ok := decoded.([]any); ok && len(arr) >= 2 {
 		if tag, _ := arr[0].(string); tag == "error" {
+			isEnvelope = true
 			if n, ok := arr[1].(interface{ String() string }); ok {
 				if iv, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
 					bfxCode = int(iv)
@@ -273,7 +296,7 @@ func (t *Transport) classify(resp *http.Response, raw []byte, endpoint string, a
 		}
 	}
 
-	if status >= 200 && status < 300 && bfxCode == 0 && decodeErr == nil {
+	if status >= 200 && status < 300 && !isEnvelope && decodeErr == nil {
 		return &Result{
 			Data:       decoded,
 			StatusCode: status,
@@ -282,7 +305,10 @@ func (t *Transport) classify(resp *http.Response, raw []byte, endpoint string, a
 		}, nil
 	}
 
-	message := bfxText
+	message := ""
+	if isEnvelope {
+		message = "Bitfinex API rejected request"
+	}
 	if message == "" {
 		if decodeErr != nil && status >= 200 && status < 300 {
 			message = "undecodable 2xx body"
@@ -302,6 +328,9 @@ func (t *Transport) classify(resp *http.Response, raw []byte, endpoint string, a
 
 	isRateLimit := status == 429 || bfxCode == 10010 || strings.Contains(bfxText, "ERR_RATE_LIMIT")
 	if isRateLimit {
+		if base.RetryAfter < 60*time.Second {
+			base.RetryAfter = 60 * time.Second
+		}
 		if rc.Bucket != "" && t.cfg.Limiter != nil {
 			t.cfg.Limiter.Penalize(rc.Bucket, retryAfter)
 		}
@@ -314,7 +343,7 @@ func (t *Transport) classify(resp *http.Response, raw []byte, endpoint string, a
 
 	if decodeErr != nil {
 		if status >= 200 && status < 300 {
-			return nil, &types.ProtocolError{Message: "undecodable 2xx body on " + endpoint + ": " + decodeErr.Error()}
+			return nil, &types.ProtocolError{Message: "undecodable 2xx body on " + endpoint}
 		}
 		return nil, &types.APIError{StatusCode: status, Message: message, Endpoint: endpoint, Attempts: attempt, BodySnippet: summary}
 	}
@@ -322,12 +351,16 @@ func (t *Transport) classify(resp *http.Response, raw []byte, endpoint string, a
 	return nil, &base
 }
 
-// safeHeaders keeps only response headers (server-generated;
-// cannot contain request secrets).
+// safeHeaders retains bounded HTTP/rate-limit metadata from an allowlist.
 func safeHeaders(resp *http.Response) map[string]string {
-	out := make(map[string]string, len(resp.Header))
-	for name, values := range resp.Header {
-		out[strings.ToLower(name)] = strings.Join(values, ", ")
+	out := make(map[string]string)
+	for _, name := range []string{"Content-Type", "Date", "Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"} {
+		if v := resp.Header.Get(name); v != "" {
+			if len(v) > 256 {
+				v = v[:256]
+			}
+			out[strings.ToLower(name)] = v
+		}
 	}
 	return out
 }
@@ -337,19 +370,19 @@ func retryAfterSeconds(h string) float64 {
 		return 0
 	}
 	f, err := strconv.ParseFloat(strings.TrimSpace(h), 64)
-	if err != nil || f < 0 {
+	if err != nil {
+		if date, dateErr := http.ParseTime(h); dateErr == nil {
+			f = time.Until(date).Seconds()
+		} else {
+			return 0
+		}
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
 		return 0
 	}
-	return f
-}
-
-// summarize returns a bounded single-line digest of a response
-// body for errors. Response bodies cannot contain request
-// secrets by construction.
-func summarize(raw []byte) string {
-	one := strings.Join(strings.Fields(string(raw)), " ")
-	if len(one) > 300 {
-		return one[:300] + "…"
+	// Bound conversion to time.Duration; very large values remain a long cooldown.
+	if f > 24*60*60 {
+		return 24 * 60 * 60
 	}
-	return one
+	return f
 }

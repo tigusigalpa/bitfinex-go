@@ -81,14 +81,14 @@ func TestDecimalJSONRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Marshals as a JSON string preserving the exact lexeme.
-	if string(raw) != `"123.456789012345678901234567890"` {
+	if string(raw) != `"123.45678901234567890123456789"` {
 		t.Fatalf("marshal = %s", raw)
 	}
 	var back Decimal
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatal(err)
 	}
-	if back.String() != d.String() {
+	if back.Cmp(d) != 0 {
 		t.Fatal("round-trip lost precision")
 	}
 	// Bare numbers decode too.

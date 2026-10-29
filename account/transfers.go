@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/tigusigalpa/bitfinex-go/internal/httpx"
@@ -24,6 +25,9 @@ type TransferRequest struct {
 // Validate enforces the local contract, including the explicit
 // confirmation flag required for high-impact writes.
 func (r TransferRequest) Validate() error {
+	if !validWallet(r.From) || !validWallet(r.To) {
+		return &types.ValidationError{Field: "wallet", Message: "unsupported wallet type"}
+	}
 	if !r.Confirm {
 		return &types.ValidationError{Field: "confirm", Message: "TransferRequest requires Confirm: true — internal transfers are high-impact writes and must be explicit"}
 	}
@@ -49,7 +53,7 @@ func (r TransferRequest) body() map[string]any {
 		"to":          r.To,
 		"currency":    r.Currency,
 		"currency_to": to,
-		"amount":      r.Amount.String(),
+		"amount":      r.Amount.CanonicalString(),
 	}
 }
 
@@ -140,7 +144,7 @@ func (s *Service) Invoice(ctx context.Context, r InvoiceRequest) (*types.Respons
 	return s.notificationCall(ctx, "v2/auth/w/deposit/invoice", map[string]any{
 		"currency": r.Currency,
 		"wallet":   r.Wallet,
-		"amount":   r.Amount.String(),
+		"amount":   r.Amount.CanonicalString(),
 	}, "transfer")
 }
 
@@ -173,6 +177,9 @@ type WithdrawRequest struct {
 
 // Validate enforces the local contract.
 func (r WithdrawRequest) Validate() error {
+	if !validWallet(r.Wallet) {
+		return &types.ValidationError{Field: "wallet", Message: "unsupported wallet type"}
+	}
 	if !r.Confirm {
 		return &types.ValidationError{Field: "confirm", Message: "WithdrawRequest requires Confirm: true — withdrawals are irreversible and must be explicit"}
 	}
@@ -184,6 +191,15 @@ func (r WithdrawRequest) Validate() error {
 	}
 	if strings.TrimSpace(r.Address) == "" && strings.TrimSpace(r.Invoice) == "" {
 		return &types.ValidationError{Field: "address", Message: "a destination address or invoice is required"}
+	}
+	if strings.EqualFold(r.Method, "lnx") {
+		if r.Invoice == "" || r.Address != "" {
+			return &types.ValidationError{Field: "invoice", Message: "lnx requires invoice and no address"}
+		}
+		return nil
+	}
+	if r.Invoice != "" {
+		return &types.ValidationError{Field: "invoice", Message: "invoice is only supported for lnx withdrawals"}
 	}
 	if !r.Amount.IsValid() || r.Amount.Sign() <= 0 {
 		return &types.ValidationError{Field: "amount", Message: "withdrawal amount must be positive"}
@@ -202,7 +218,11 @@ func (s *Service) Withdraw(ctx context.Context, r WithdrawRequest) (*types.Respo
 		"method":  r.Method,
 		"wallet":  r.Wallet,
 		"address": r.Address,
-		"amount":  r.Amount.String(),
+		"amount":  r.Amount.CanonicalString(),
+	}
+	if strings.EqualFold(r.Method, "lnx") {
+		delete(body, "address")
+		delete(body, "amount")
 	}
 	if r.Invoice != "" {
 		body["invoice"] = r.Invoice
@@ -213,12 +233,23 @@ func (s *Service) Withdraw(ctx context.Context, r WithdrawRequest) (*types.Respo
 	return s.notificationCall(ctx, "v2/auth/w/withdraw", body, "withdraw")
 }
 
+func validWallet(s string) bool {
+	switch s {
+	case "exchange", "margin", "funding", "trading", "deposit":
+		return true
+	}
+	return false
+}
+
 // Movements returns POST /auth/r/movements[/{currency}]/hist —
 // deposits + withdrawals, optionally filtered by currency.
 func (s *Service) Movements(ctx context.Context, currency string, q *types.HistoryQuery) (*types.Response[[]Movement], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	path := "v2/auth/r/movements"
 	if currency != "" {
-		path += "/" + strings.ToUpper(strings.TrimSpace(currency))
+		path += "/" + url.PathEscape(strings.ToUpper(strings.TrimSpace(currency)))
 	}
 	path += "/hist"
 	r, err := s.t.PostAuth(ctx, path, q.Body(), readBucket())

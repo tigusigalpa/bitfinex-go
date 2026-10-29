@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,22 +13,24 @@ import (
 // fakeConn is a minimal scripted WS conn for package-internal
 // tests (the public testutil fake is also available to users).
 type fakeConn struct {
-	in  chan []byte
-	out chan []byte
+	in   chan []byte
+	out  chan []byte
+	done chan struct{}
+	once sync.Once
 }
 
 func newFakeConn() *fakeConn {
-	return &fakeConn{in: make(chan []byte, 64), out: make(chan []byte, 64)}
+	return &fakeConn{in: make(chan []byte, 64), out: make(chan []byte, 64), done: make(chan struct{})}
 }
 
 func (c *fakeConn) ReadMessage() (int, []byte, error) {
-	m, ok := <-c.in
-	if !ok {
+	select {
+	case m := <-c.in:
+		return 1, m, nil
+	case <-c.done:
 		return 0, nil, errClosed
 	}
-	return 1, m, nil
 }
-
 func (c *fakeConn) WriteMessage(_ int, data []byte) error {
 	select {
 	case c.out <- data:
@@ -37,15 +40,8 @@ func (c *fakeConn) WriteMessage(_ int, data []byte) error {
 }
 
 func (c *fakeConn) WriteControl(_ int, _ []byte, _ time.Time) error { return nil }
-func (c *fakeConn) Close() error {
-	select {
-	case <-c.in:
-	default:
-		close(c.in)
-	}
-	return nil
-}
-func (c *fakeConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *fakeConn) Close() error                                    { c.once.Do(func() { close(c.done) }); return nil }
+func (c *fakeConn) SetWriteDeadline(time.Time) error                { return nil }
 
 var errClosed = errors.New("closed")
 
@@ -148,9 +144,6 @@ func TestChecksumVerify(t *testing.T) {
 	b.applyPrec("100", 1, "1")
 	b.applyPrec("99", 1, "2")
 	b.applyPrec("101", 1, "-1")
-	if b.checksum(false) == 0 && b.checksum(false) != b.checksum(false) {
-		t.Fatal("checksum unstable")
-	}
 	got := b.checksum(false)
 	if !b.verify(got, false) {
 		t.Fatal("self-verify failed")

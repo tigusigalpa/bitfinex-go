@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-29
+
+### Fixed
+
+- WebSocket authentication now includes `authNonce`. Reconnect survives the first
+  disconnect and repeated generations, re-authenticates with fresh nonces, and
+  keeps account snapshots. Cancellation and Close interrupt handshakes/backoff.
+- Serialize concurrent socket writes; bound frames, handshake and idle reads;
+  propagate decoder failures; drop corrupt deltas and rebuild connections after
+  integrity failures. Backpressure terminates once without unbounded goroutines.
+- Correct ticker-history indexes, REST book `len`, raw funding-book layout,
+  funding offer types and canonical monetary request strings.
+- Validate order dependencies, CID dates/ranges, cancel selectors, history windows,
+  nonces, invalid options and typed nil dependencies before I/O.
+- Redact server-error bodies/messages, restrict HTTP response metadata, block signed
+  redirects, bound responses and retry elapsed time, parse HTTP-date Retry-After,
+  expose wrapped APIError metadata, and avoid retrying permanent transport errors.
+- Recheck limiter state after waits, preserve extended penalties and apply server
+  cooldown across all buckets; use conservative shared-group defaults.
+- Bound decimal parsing and fix signed negation, strict JSON framing and integer
+  formatting at the int64 boundary.
+
+### Added
+
+- Cross-service offline REST success/error/routing tests and WebSocket lifecycle,
+  concurrency, integrity and backpressure regressions; active fuzzing of four parsers.
+- Current Go 1.26/1.27 CI, valid pinned actions, dependency review, security checks,
+  and full checks on release tags. Coverage threshold remains 55%.
+- Versioned review and upgrade notes; concrete endpoint reference links and honest
+  deferred statuses for raw/partial contracts.
+
+## [1.0.0] - 2026-10-29
+
+Original supplied SDK snapshot. The entries below describe its intended scope;
+the v1.1.0 review corrects overstated verification and coverage claims.
+
 ### Added
 
 - Initial public release candidate: Bitfinex API v2 client (REST + WebSocket).

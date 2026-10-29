@@ -108,9 +108,9 @@ func (p Policy) DelayForAttempt(attempt int) time.Duration {
 		return 0
 	}
 	if p.randSource != nil {
-		return time.Duration(p.randSource.Int63n(int64(cap) + 1))
+		return time.Duration(p.randSource.Int63n(int64(cap)))
 	}
-	return time.Duration(rand.Int63n(int64(cap) + 1))
+	return time.Duration(rand.Int63n(int64(cap)))
 }
 
 // ElapsedExceeded reports whether the elapsed budget is spent.

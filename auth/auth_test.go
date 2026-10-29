@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// Public synthetic HMAC vector key, never an exchange credential.
 const testSecret = "test-api-secret-0123456789abcdef"
 
 func testCreds(t *testing.T) Credentials {

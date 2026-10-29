@@ -14,6 +14,12 @@ import (
 const (
 	TypeLend = "lend"
 	TypeLoan = "loan"
+	// TypeLimit uses a fixed daily rate.
+	TypeLimit = "LIMIT"
+	// TypeFRRDeltaFix uses a fixed offset from FRR.
+	TypeFRRDeltaFix = "FRRDELTAFIX"
+	// TypeFRRDeltaVar uses a dynamic non-negative offset from FRR.
+	TypeFRRDeltaVar = "FRRDELTAVAR"
 )
 
 // FundingOffer is one funding offer row:

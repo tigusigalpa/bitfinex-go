@@ -8,6 +8,7 @@ package positions
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/tigusigalpa/bitfinex-go/internal/httpx"
@@ -123,7 +124,7 @@ func (r ClaimRequest) Validate() error {
 func (r ClaimRequest) Body() map[string]any {
 	body := map[string]any{"id": r.ID}
 	if r.Amount != nil {
-		body["amount"] = r.Amount.String()
+		body["amount"] = r.Amount.CanonicalString()
 	}
 	return body
 }
@@ -147,7 +148,7 @@ func (r IncreaseRequest) Validate() error {
 
 // Body renders the request body.
 func (r IncreaseRequest) Body() map[string]any {
-	return map[string]any{"symbol": r.Symbol, "amount": r.Amount.String()}
+	return map[string]any{"symbol": r.Symbol, "amount": r.Amount.CanonicalString()}
 }
 
 // Service exposes position endpoints.
@@ -177,6 +178,9 @@ func (s *Service) Active(ctx context.Context) (*types.Response[[]Position], erro
 
 // History returns POST /auth/r/positions/hist.
 func (s *Service) History(ctx context.Context, q *types.HistoryQuery) (*types.Response[[]Position], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/positions/hist", q.Body(), readBucket())
 	if err != nil {
 		return nil, err
@@ -186,6 +190,9 @@ func (s *Service) History(ctx context.Context, q *types.HistoryQuery) (*types.Re
 
 // Snapshot returns POST /auth/r/positions/snap.
 func (s *Service) Snapshot(ctx context.Context, q *types.HistoryQuery) (*types.Response[[]Position], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/positions/snap", q.Body(), readBucket())
 	if err != nil {
 		return nil, err
@@ -195,6 +202,9 @@ func (s *Service) Snapshot(ctx context.Context, q *types.HistoryQuery) (*types.R
 
 // Audit returns POST /auth/r/positions/audit for one position id.
 func (s *Service) Audit(ctx context.Context, positionID int64, q *types.HistoryQuery) (*types.Response[[]Position], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	if positionID <= 0 {
 		return nil, &types.ValidationError{Field: "id", Message: "position id must be positive"}
 	}
@@ -233,7 +243,7 @@ func (s *Service) IncreaseInfo(ctx context.Context, symbol string, amount types.
 		return nil, &types.ValidationError{Field: "amount", Message: "increase info amount must be non-zero"}
 	}
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/position/increase/info", map[string]any{
-		"symbol": symbol, "amount": amount.String(),
+		"symbol": symbol, "amount": amount.CanonicalString(),
 	}, readBucket())
 	if err != nil {
 		return nil, err
@@ -290,7 +300,7 @@ func (s *Service) MarginInfo(ctx context.Context, key string) (*types.Response[[
 	if strings.TrimSpace(key) == "" {
 		key = "base"
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/info/margin/"+key, nil, readBucket())
+	r, err := s.t.PostAuth(ctx, "v2/auth/r/info/margin/"+url.PathEscape(key), nil, readBucket())
 	if err != nil {
 		return nil, err
 	}

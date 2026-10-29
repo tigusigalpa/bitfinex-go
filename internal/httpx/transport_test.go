@@ -88,6 +88,7 @@ func TestRateLimitErrorAndCooldown(t *testing.T) {
 	lim := ratelimit.New(nil, time.Hour)
 	cfg := testCfg(doer)
 	cfg.Limiter = lim
+	cfg.Retry.MaxAttempts = 1
 	tr := New(cfg)
 	doer.Responses = append(doer.Responses, testutil.JSONResponse(429, `["error",10010,"ERR_RATE_LIMIT"]`, map[string]string{"Retry-After": "5"}))
 	_, err := tr.GetPublic(context.Background(), "ticker/tBTCUSD", nil, RequestContext{Bucket: "ticker", Idempotent: true})
@@ -163,6 +164,7 @@ func TestCtxCancelDuringLimiterWait(t *testing.T) {
 	doer := &testutil.FakeDoer{}
 	cfg := testCfg(doer)
 	cfg.Limiter = lim
+	cfg.Retry.MaxAttempts = 1
 	tr := New(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

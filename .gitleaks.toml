@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public synthetic HMAC golden-vector secret from auth/auth_test.go; never a live API credential"
+regexTarget = "secret"
+regexes = ['''^test-api-secret-0123456789abcdef$''']

@@ -95,6 +95,32 @@ type CancelMultiRequest struct {
 
 // Validate enforces at least one selector.
 func (r CancelMultiRequest) Validate() error {
+	selectors := 0
+	if len(r.IDs) > 0 {
+		selectors++
+	}
+	if len(r.CIDs) > 0 {
+		selectors++
+	}
+	if len(r.GIDs) > 0 {
+		selectors++
+	}
+	if r.All {
+		selectors++
+	}
+	if selectors != 1 {
+		return &types.ValidationError{Field: "selectors", Message: "choose exactly one of ids, cids, gids or all"}
+	}
+	for _, id := range append(append([]int64{}, r.IDs...), r.GIDs...) {
+		if id <= 0 {
+			return &types.ValidationError{Field: "id", Message: "ids must be positive"}
+		}
+	}
+	for _, cid := range r.CIDs {
+		if err := cid.Validate(); err != nil {
+			return err
+		}
+	}
 	if r.All {
 		return nil
 	}

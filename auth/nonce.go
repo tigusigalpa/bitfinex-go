@@ -61,9 +61,15 @@ func NewMillisecondNonceProvider(clock Clock) *MillisecondNonceProvider {
 }
 
 // Next returns a strictly increasing nonce string.
-func (p *MillisecondNonceProvider) Next(_ context.Context) (string, error) {
+func (p *MillisecondNonceProvider) Next(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
 	now := p.clock.Now().UnixMilli()
 	next := now

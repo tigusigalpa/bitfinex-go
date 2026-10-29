@@ -4,7 +4,7 @@
 // alerts, user settings, and the money-moving endpoints
 // (transfer, deposit, invoice, withdrawal, movements).
 //
-// All mutating calls require explicit confirmation
+// High-impact transfer/invoice/withdrawal calls require explicit confirmation
 // (Confirm: true) so a high-impact write can never be fired
 // accidentally. Writes are never automatically retried.
 package account

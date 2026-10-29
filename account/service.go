@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/tigusigalpa/bitfinex-go/internal/httpx"
@@ -56,6 +57,9 @@ func (s *Service) Summary(ctx context.Context) (*types.Response[any], error) {
 
 // LoginHistory returns POST /auth/r/logins/hist.
 func (s *Service) LoginHistory(ctx context.Context, q *types.HistoryQuery) (*types.Response[[]LoginEntry], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/logins/hist", q.Body(), readBucket())
 	if err != nil {
 		return nil, err
@@ -109,6 +113,9 @@ func (s *Service) GenerateToken(ctx context.Context, ttlSeconds int, caps []stri
 // AuditHistory returns POST /auth/r/audit/hist — account change
 // audit trail (shape varies; preserved untyped).
 func (s *Service) AuditHistory(ctx context.Context, q *types.HistoryQuery) (*types.Response[any], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/audit/hist", q.Body(), readBucket())
 	if err != nil {
 		return nil, err
@@ -119,9 +126,12 @@ func (s *Service) AuditHistory(ctx context.Context, q *types.HistoryQuery) (*typ
 // Ledgers returns POST /auth/r/ledgers[/{currency}]/hist.
 // Documented retention: up to ~6 years.
 func (s *Service) Ledgers(ctx context.Context, currency string, q *types.HistoryQuery) (*types.Response[[]LedgerEntry], error) {
+	if err := q.Validate(); err != nil {
+		return nil, err
+	}
 	path := "v2/auth/r/ledgers"
 	if currency != "" {
-		path += "/" + strings.ToUpper(strings.TrimSpace(currency))
+		path += "/" + url.PathEscape(strings.ToUpper(strings.TrimSpace(currency)))
 	}
 	path += "/hist"
 	r, err := s.t.PostAuth(ctx, path, q.Body(), readBucket())
@@ -159,10 +169,10 @@ func (s *Service) AvailableBalanceForOrder(ctx context.Context, symbol, orderTyp
 	body := map[string]any{
 		"symbol": symbol,
 		"type":   orderType,
-		"amount": amount.String(),
+		"amount": amount.CanonicalString(),
 	}
 	if rate != nil {
-		body["rate"] = rate.String()
+		body["rate"] = rate.CanonicalString()
 	}
 	if lev != nil {
 		body["lev"] = *lev
@@ -232,7 +242,7 @@ func (s *Service) AlertSet(ctx context.Context, req AlertSetRequest) (*types.Res
 	r, err := s.t.PostAuth(ctx, "v2/auth/w/alert/set", map[string]any{
 		"type":   req.Type,
 		"symbol": req.Symbol,
-		"price":  req.Price.String(),
+		"price":  req.Price.CanonicalString(),
 	}, writeBucket())
 	if err != nil {
 		return nil, err
@@ -250,7 +260,7 @@ func (s *Service) AlertDelete(ctx context.Context, symbol string, price types.De
 	if !price.IsValid() {
 		return nil, &types.ValidationError{Field: "price", Message: "alert price must be a valid decimal"}
 	}
-	path := "v2/auth/w/alert/price:" + sym.String() + ":" + price.String() + "/del"
+	path := "v2/auth/w/alert/price:" + sym.String() + ":" + price.CanonicalString() + "/del"
 	r, err := s.t.PostAuth(ctx, path, nil, writeBucket())
 	if err != nil {
 		return nil, err

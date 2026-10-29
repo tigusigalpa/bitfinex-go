@@ -51,9 +51,13 @@ func (d GorillaDialer) Dial(ctx context.Context, url string) (Conn, error) {
 		HandshakeTimeout: timeout,
 		Proxy:            http.ProxyFromEnvironment,
 	}
-	c, _, err := gd.DialContext(ctx, url, d.Header)
+	c, resp, err := gd.DialContext(ctx, url, d.Header)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return nil, err
 	}
+	c.SetReadLimit(4 << 20)
 	return c, nil
 }
