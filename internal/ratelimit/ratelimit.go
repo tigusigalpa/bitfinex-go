@@ -38,6 +38,7 @@ func DefaultLimits() map[string]float64 {
 		"book":            90,
 		"stats":           15,
 		"candles":         30,
+		"liquidations":    3,
 		"withdraw":        10,
 	}
 }

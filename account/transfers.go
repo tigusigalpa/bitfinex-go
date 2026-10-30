@@ -58,6 +58,7 @@ func (r TransferRequest) body() map[string]any {
 }
 
 // Transfer sends POST /auth/w/transfer. Never retried.
+// Deprecated: use TransferTyped for the documented typed contract.
 func (s *Service) Transfer(ctx context.Context, r TransferRequest) (*types.Response[orders.Notification], error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -88,6 +89,7 @@ func (r DepositAddressRequest) Validate() error {
 
 // DepositAddress sends POST /auth/w/deposit/address.
 // Never retried.
+// Deprecated: use DepositAddressTyped for the documented typed contract.
 func (s *Service) DepositAddress(ctx context.Context, r DepositAddressRequest) (*types.Response[orders.Notification], error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -104,13 +106,10 @@ func (s *Service) DepositAddress(ctx context.Context, r DepositAddressRequest) (
 }
 
 // DepositAddresses returns POST /auth/r/deposit/address/all —
-// last used addresses per method (shape varies; untyped).
+// last used addresses per method.
+// Deprecated: this signature lacks the required method. Use DepositAddressesTyped.
 func (s *Service) DepositAddresses(ctx context.Context) (*types.Response[any], error) {
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/deposit/address/all", nil, readBucket())
-	if err != nil {
-		return nil, err
-	}
-	return types.NewResponse(r.Data, httpx.Meta(r)), nil
+	return nil, &types.ValidationError{Field: "method", Message: "deposit method is required; use DepositAddressesTyped or DepositAddressesIterator"}
 }
 
 // InvoiceRequest is POST /auth/w/deposit/invoice — generates a
@@ -127,39 +126,40 @@ func (r InvoiceRequest) Validate() error {
 	if !r.Confirm {
 		return &types.ValidationError{Field: "confirm", Message: "InvoiceRequest requires Confirm: true — invoice generation is a write"}
 	}
-	if strings.TrimSpace(r.Currency) == "" || strings.TrimSpace(r.Wallet) == "" {
-		return &types.ValidationError{Field: "currency", Message: "currency and wallet required"}
+	if r.Currency != "LNX" || r.Wallet != "exchange" {
+		return &types.ValidationError{Field: "currency", Message: "invoice requires currency LNX and wallet exchange"}
 	}
 	if !r.Amount.IsValid() || r.Amount.Sign() <= 0 {
 		return &types.ValidationError{Field: "amount", Message: "invoice amount must be positive"}
+	}
+	if r.Amount.Cmp(types.MustDecimal("0.000001")) < 0 || r.Amount.Cmp(types.MustDecimal("0.02")) > 0 {
+		return &types.ValidationError{Field: "amount", Message: "invoice BTC amount must be 0.000001..0.02"}
 	}
 	return nil
 }
 
 // Invoice sends POST /auth/w/deposit/invoice. Never retried.
+// Deprecated: use InvoiceTyped for the native result. This returns an SDK adapter envelope.
 func (s *Service) Invoice(ctx context.Context, r InvoiceRequest) (*types.Response[orders.Notification], error) {
-	if err := r.Validate(); err != nil {
+	result, err := s.InvoiceTyped(ctx, r)
+	if err != nil {
 		return nil, err
 	}
-	return s.notificationCall(ctx, "v2/auth/w/deposit/invoice", map[string]any{
-		"currency": r.Currency,
-		"wallet":   r.Wallet,
-		"amount":   r.Amount.CanonicalString(),
-	}, "transfer")
+	return types.NewResponse(orders.Notification{Type: "invoice-adapter", Status: "SUCCESS", Data: result.Data}, result.Meta), nil
 }
 
 // InvoicePayments returns POST /auth/r/ext/invoice/payments —
 // completed LNX invoice payments (shape varies; untyped).
+// Deprecated: use InvoicePaymentsTyped for the documented typed contract.
 func (s *Service) InvoicePayments(ctx context.Context, limit int) (*types.Response[any], error) {
-	body := map[string]any{}
-	if limit > 0 {
-		body["limit"] = limit
+	if limit != 0 {
+		return nil, &types.ValidationError{Field: "limit", Message: "this endpoint has no limit parameter; use InvoicePaymentsTyped with an action and offset"}
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/ext/invoice/payments", body, readBucket())
-	if err != nil {
-		return nil, err
+	r, e := s.InvoicePaymentsTyped(ctx, InvoiceQuery{Action: "getPaymentsByUser"})
+	if e != nil {
+		return nil, e
 	}
-	return types.NewResponse(r.Data, httpx.Meta(r)), nil
+	return types.NewResponse[any](r.Data, r.Meta), nil
 }
 
 // WithdrawRequest is POST /auth/w/withdraw — the highest-impact
@@ -210,6 +210,7 @@ func (r WithdrawRequest) Validate() error {
 // Withdraw sends POST /auth/w/withdraw. Never retried — if the
 // outcome is ambiguous, reconcile via Movements before any
 // resubmission.
+// Deprecated: use WithdrawTyped for the documented typed contract.
 func (s *Service) Withdraw(ctx context.Context, r WithdrawRequest) (*types.Response[orders.Notification], error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -244,7 +245,7 @@ func validWallet(s string) bool {
 // Movements returns POST /auth/r/movements[/{currency}]/hist —
 // deposits + withdrawals, optionally filtered by currency.
 func (s *Service) Movements(ctx context.Context, currency string, q *types.HistoryQuery) (*types.Response[[]Movement], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(1000, false); err != nil {
 		return nil, err
 	}
 	path := "v2/auth/r/movements"
@@ -252,7 +253,7 @@ func (s *Service) Movements(ctx context.Context, currency string, q *types.Histo
 		path += "/" + url.PathEscape(strings.ToUpper(strings.TrimSpace(currency)))
 	}
 	path += "/hist"
-	r, err := s.t.PostAuth(ctx, path, q.Body(), readBucket())
+	r, err := s.t.PostAuth(ctx, path, historyBody(q), readBucket())
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +274,7 @@ func (s *Service) Movements(ctx context.Context, currency string, q *types.Histo
 
 // MovementInfo returns POST /auth/r/movements/info — status
 // detail for one movement id (shape varies; untyped).
+// Deprecated: use MovementInfoTyped for the documented typed contract.
 func (s *Service) MovementInfo(ctx context.Context, id int64) (*types.Response[any], error) {
 	if id <= 0 {
 		return nil, &types.ValidationError{Field: "id", Message: "movement id must be positive"}
@@ -287,8 +289,9 @@ func (s *Service) MovementInfo(ctx context.Context, id int64) (*types.Response[a
 // ThalexFreeTransferCount returns
 // POST /auth/r/ext/wallets/transfers/free/count — the remaining
 // free Thalex transfer count.
+// Deprecated: use ThalexFreeTransferCountTyped for the documented typed contract.
 func (s *Service) ThalexFreeTransferCount(ctx context.Context) (*types.Response[any], error) {
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/ext/wallets/transfers/free/count", nil, readBucket())
+	r, err := s.t.PostAuth(ctx, "v2/auth/r/ext/wallets/transfers/free/count", map[string]any{"Provider": "thalex"}, readBucket())
 	if err != nil {
 		return nil, err
 	}

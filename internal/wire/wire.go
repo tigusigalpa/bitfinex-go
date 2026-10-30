@@ -64,6 +64,9 @@ func AssertMinLength(a []any, min int, what string) error {
 
 // AsArr casts v to a positional array.
 func AsArr(v any, what string) (Arr, error) {
+	if a, ok := v.(Arr); ok {
+		return a, nil
+	}
 	a, ok := v.([]any)
 	if !ok {
 		return nil, &types.ProtocolError{Message: fmt.Sprintf("expected array for %s, got %s", what, kind(v))}

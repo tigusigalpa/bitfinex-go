@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-30
+
+### Added
+
+- Lazy context-aware iterators for 22 timestamp histories, numbered deposit
+  address pages and offset-based Lightning invoice/payment lists. Inclusive
+  boundaries are de-duplicated; saturated windows fail explicitly.
+- Typed public configurations (20 variants), VASPs, rankings, margin/funding
+  calculations, position previews and collateral limits, account summaries,
+  permissions, redacted tokens, audit entries, settings, movement details,
+  alerts, payment acknowledgements and Thalex transfers with OTP/U2F.
+- Typed WebSocket derivative/liquidation status and balance/margin/funding info.
+- Exact immutable JSON values for self-defined settings and opaque metadata.
+
+### Fixed
+
+- SetDerivativeCollateral accepts an amount and parses the native status result;
+  SetDerivativeCollateralAmount accepts Decimal. The old return type is retained
+  through an explicitly documented adapter.
+- Correct position-history, login, movement, OTC, derivative-status, liquidation,
+  funding-statistics and ranking schemas, invoice result shape, settings/token
+  bodies, required deposit method, average-price POST query and endpoint limits.
+- Preserve exact fractional liquidation timestamps; throttle liquidations at the
+  documented 3 requests/minute. Money-moving writes remain non-retryable.
+
+### Verification
+
+- Expanded exact-body/success/malformed/server-error fixtures and HTTP pagination
+  tests; active fuzzing includes new typed calculations and exact JSON values.
+- Migration details and API constraints are documented in docs/upgrade-v1.2.0.md
+  and docs/pagination.md.
+
 ## [1.1.0] - 2026-10-30
 
 ### Fixed

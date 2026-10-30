@@ -178,43 +178,43 @@ func (s *Service) Active(ctx context.Context) (*types.Response[[]Position], erro
 
 // History returns POST /auth/r/positions/hist.
 func (s *Service) History(ctx context.Context, q *types.HistoryQuery) (*types.Response[[]Position], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(100, false); err != nil {
 		return nil, err
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/positions/hist", q.Body(), readBucket())
+	r, err := s.t.PostAuth(ctx, "v2/auth/r/positions/hist", historyBody(q), readBucket())
 	if err != nil {
 		return nil, err
 	}
-	return s.positionList(r)
+	return positionHistoryList(r)
 }
 
 // Snapshot returns POST /auth/r/positions/snap.
 func (s *Service) Snapshot(ctx context.Context, q *types.HistoryQuery) (*types.Response[[]Position], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(500, false); err != nil {
 		return nil, err
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/positions/snap", q.Body(), readBucket())
+	r, err := s.t.PostAuth(ctx, "v2/auth/r/positions/snap", historyBody(q), readBucket())
 	if err != nil {
 		return nil, err
 	}
-	return s.positionList(r)
+	return positionHistoryList(r)
 }
 
 // Audit returns POST /auth/r/positions/audit for one position id.
 func (s *Service) Audit(ctx context.Context, positionID int64, q *types.HistoryQuery) (*types.Response[[]Position], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(500, false); err != nil {
 		return nil, err
 	}
 	if positionID <= 0 {
 		return nil, &types.ValidationError{Field: "id", Message: "position id must be positive"}
 	}
-	body := q.Body()
-	body["id"] = positionID
+	body := historyBody(q)
+	body["id"] = []int64{positionID}
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/positions/audit", body, readBucket())
 	if err != nil {
 		return nil, err
 	}
-	return s.positionList(r)
+	return positionHistoryList(r)
 }
 
 // Claim sends POST /auth/w/position/claim. Never retried.
@@ -235,6 +235,7 @@ func (s *Service) Increase(ctx context.Context, req IncreaseRequest) (*types.Res
 
 // IncreaseInfo POSTs /auth/r/position/increase/info — a
 // funding/impact preview for a hypothetical increase. Idempotent.
+// Deprecated: use IncreaseInfoTyped for the documented typed contract.
 func (s *Service) IncreaseInfo(ctx context.Context, symbol string, amount types.Decimal) (*types.Response[any], error) {
 	if _, err := types.ParseSymbol(symbol); err != nil {
 		return nil, err
@@ -264,23 +265,29 @@ func (s *Service) UpdateFundingType(ctx context.Context, symbol string, fundingT
 		map[string]any{"symbol": symbol, "type": fundingType}, writeBucket()))
 }
 
-// SetDerivativeCollateral sends POST /auth/w/deriv/collateral/set —
-// sets the collateral currency for a derivative position.
-// Never retried.
-func (s *Service) SetDerivativeCollateral(ctx context.Context, symbol, collateralCurrency string) (*types.Response[orders.Notification], error) {
-	if _, err := types.ParseSymbol(symbol); err != nil {
+// SetDerivativeCollateral accepts a decimal amount string and adapts the status
+// array to the legacy Notification result. Type is "collateral-status-adapter";
+// this is an SDK compatibility envelope, not a server notification.
+// Deprecated: use SetDerivativeCollateralAmount for the native typed status.
+func (s *Service) SetDerivativeCollateral(ctx context.Context, symbol, collateralAmount string) (*types.Response[orders.Notification], error) {
+	amount, err := types.NewDecimal(collateralAmount)
+	if err != nil {
+		return nil, &types.ValidationError{Field: "collateral", Message: "expected decimal collateral amount, not a currency"}
+	}
+	r, err := s.SetDerivativeCollateralAmount(ctx, symbol, amount)
+	if err != nil {
 		return nil, err
 	}
-	ccy := strings.ToUpper(strings.TrimSpace(collateralCurrency))
-	if ccy == "" {
-		return nil, &types.ValidationError{Field: "collateral", Message: "collateral currency required"}
+	status := "ERROR"
+	if r.Data.Success {
+		status = "SUCCESS"
 	}
-	return s.notification(s.t.PostAuth(ctx, "v2/auth/w/deriv/collateral/set",
-		map[string]any{"symbol": symbol, "collateral": ccy}, writeBucket()))
+	return types.NewResponse(orders.Notification{Type: "collateral-status-adapter", Status: status, Data: r.Data}, r.Meta), nil
 }
 
 // DerivativeCollateralLimits POSTs /auth/calc/deriv/collateral/limits
 // — allowed collateral range. Idempotent calc endpoint.
+// Deprecated: use DerivativeCollateralLimitsTyped for the documented typed contract.
 func (s *Service) DerivativeCollateralLimits(ctx context.Context, symbol string) (*types.Response[any], error) {
 	if _, err := types.ParseSymbol(symbol); err != nil {
 		return nil, err
@@ -296,6 +303,7 @@ func (s *Service) DerivativeCollateralLimits(ctx context.Context, symbol string)
 // MarginInfo POSTs /auth/r/info/margin/{key} — key "base", "all"
 // or a symbol key like "sym_tBTCUSD". Returns one info envelope
 // or a list of them depending on the key.
+// Deprecated: use MarginInfoTyped for the documented typed contract.
 func (s *Service) MarginInfo(ctx context.Context, key string) (*types.Response[[]types.KeyValueInfo], error) {
 	if strings.TrimSpace(key) == "" {
 		key = "base"

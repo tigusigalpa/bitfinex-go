@@ -126,6 +126,27 @@ func (t *Transport) PostPublic(ctx context.Context, path string, body any, rc Re
 	}, path, rc)
 }
 
+// PostPublicQuery sends a public read calculation whose inputs are URL parameters.
+func (t *Transport) PostPublicQuery(ctx context.Context, path string, params map[string]string, rc RequestContext) (*Result, error) {
+	u := strings.TrimRight(t.cfg.PublicBase, "/") + "/" + strings.TrimLeft(path, "/")
+	q := url.Values{}
+	for k, v := range params {
+		q.Set(k, v)
+	}
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	return t.send(ctx, func(ctx context.Context) (*http.Request, error) {
+		r, e := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader("{}"))
+		if e != nil {
+			return nil, e
+		}
+		r.Header.Set("Accept", "application/json")
+		r.Header.Set("Content-Type", "application/json")
+		return r, nil
+	}, path, rc)
+}
+
 // PostAuth performs a signed POST on the private base. apiPath is
 // relative to /api/ including the version prefix, e.g.
 // "v2/auth/r/wallets". The JSON body is serialized ONCE — the

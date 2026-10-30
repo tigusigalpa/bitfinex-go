@@ -8,6 +8,7 @@ import (
 	"github.com/tigusigalpa/bitfinex-go/positions"
 	"github.com/tigusigalpa/bitfinex-go/types"
 	"github.com/tigusigalpa/bitfinex-go/wallets"
+	"strings"
 )
 
 func (c *Client) dispatchTagged(id int64, tag string, payload any) {
@@ -67,6 +68,17 @@ func (c *Client) dispatchUntagged(id int64, payload any) {
 			ev.Kind = KindSnapshot
 		} else if _, nested := arr[0].([]any); nested {
 			ev.Kind = KindSnapshot
+		}
+	case "status":
+		ev.Status = payload // retained legacy escape hatch
+		if strings.HasPrefix(sub.req.Key, "deriv:") {
+			v, e := market.DerivativeStatusHistoryFromWire(arr, types.Symbol(strings.TrimPrefix(sub.req.Key, "deriv:")))
+			err = e
+			ev.DerivativeStatus = &v
+		} else if sub.req.Key == "liq:global" {
+			ev.Liquidations, err = decodeEntityList(payload, market.LiquidationFromWire)
+		} else {
+			err = &types.ProtocolError{Message: "unsupported status key"}
 		}
 	default:
 		ev.Status = payload
@@ -178,6 +190,28 @@ func (c *Client) dispatchAuthStream(tag string, payload any) {
 			err = e
 			a.Notification = &n
 		}
+	case "bu":
+		row, e := wire.AsArr(payload, "balance info")
+		err = e
+		if err == nil {
+			var b types.BalanceInfo
+			b.Assets, err = wire.RequiredDecimal(row, 0)
+			if err == nil {
+				b.NetAssets, err = wire.RequiredDecimal(row, 1)
+			}
+			a.Balance = &b
+		}
+		a.Info = payload
+	case "miu":
+		m, e := wire.MarginInfo(payload)
+		err = e
+		a.Margin = &m
+		a.Info = payload
+	case "fiu":
+		v, e := wire.FundingInfo(payload)
+		err = e
+		a.Funding = &v
+		a.Info = payload
 	default:
 		a.Info = payload
 	}

@@ -8,6 +8,8 @@ package market
 import (
 	"github.com/tigusigalpa/bitfinex-go/internal/wire"
 	"github.com/tigusigalpa/bitfinex-go/types"
+	"strconv"
+	"strings"
 )
 
 // Ticker is a trading or funding ticker snapshot.
@@ -126,6 +128,8 @@ type DerivativeStatus struct {
 
 // Liquidation is a liquidation event entry.
 type Liquidation struct {
+	MessageType   string        `json:"message_type"`
+	Timestamp     types.Decimal `json:"timestamp_exact"`
 	PositionID    int64         `json:"position_id"`
 	MTS           types.Millis  `json:"mts"`
 	Symbol        types.Symbol  `json:"symbol"`
@@ -138,24 +142,29 @@ type Liquidation struct {
 
 // FundingStatsEntry is a funding statistics snapshot.
 type FundingStatsEntry struct {
-	MTS             types.Millis  `json:"mts"`
-	FRR             types.Decimal `json:"frr"`
-	AverageRate     types.Decimal `json:"average_rate"`
-	AveragePeriod   types.Decimal `json:"average_period"`
-	FundingUsed     types.Decimal `json:"funding_used"`
-	FundingProvided types.Decimal `json:"funding_provided"`
+	FundingBelowThreshold types.Decimal `json:"funding_below_threshold"`
+	MTS                   types.Millis  `json:"mts"`
+	FRR                   types.Decimal `json:"frr"`
+	AverageRate           types.Decimal `json:"average_rate"`
+	AveragePeriod         types.Decimal `json:"average_period"`
+	FundingUsed           types.Decimal `json:"funding_used"`
+	FundingProvided       types.Decimal `json:"funding_provided"`
 }
 
 // RankingRow is a best-effort leaderboard row; Extra preserves
 // the undocumented tail of the positional array.
 type RankingRow struct {
-	MTS      types.Millis `json:"mts"`
-	Username string       `json:"username"`
-	Extra    []any        `json:"extra,omitempty"`
+	Rank          int64         `json:"rank"`
+	Value         types.Decimal `json:"value"`
+	TwitterHandle string        `json:"twitter_handle"`
+	MTS           types.Millis  `json:"mts"`
+	Username      string        `json:"username"`
+	Extra         []any         `json:"extra,omitempty"`
 }
 
 // MarketAvgPrice is the hypothetical average execution price.
 type MarketAvgPrice struct {
+	RateAvg  types.Decimal `json:"rate_avg"`
 	PriceAvg types.Decimal `json:"price_avg"`
 	Amount   types.Decimal `json:"amount"`
 }
@@ -405,111 +414,99 @@ func statEntryFromWire(a []any) (StatEntry, error) {
 }
 
 func derivStatusFromWire(a []any) (DerivativeStatus, error) {
-	d := DerivativeStatus{}
-	if err := wire.AssertMinLength(a, 4, "derivative status"); err != nil {
-		return d, err
+	var d DerivativeStatus
+	if e := wire.AssertMinLength(a, 24, "derivative status"); e != nil {
+		return d, e
 	}
-	var err error
-	key, _ := wire.Str(a, 0)
+	key, e := wire.RequiredString(a, 0)
+	if e != nil {
+		return d, e
+	}
 	d.Key = types.Symbol(key)
-	if mts, _, merr := wire.Mts(a, 1); merr != nil {
-		return d, merr
-	} else {
-		d.MTS = mts
+	ts, e := wire.MustInt(a, 1, "derivative timestamp")
+	if e != nil {
+		return d, e
 	}
-	if d.DerivPrice, err = wire.DecOr(a, 3, types.Decimal{}); err != nil {
-		return d, err
+	d.MTS = types.Millis(ts)
+	for _, x := range []struct {
+		p *types.Decimal
+		i int
+	}{{&d.DerivPrice, 3}, {&d.SpotPrice, 4}, {&d.InsuranceFundBalance, 6}, {&d.NextFundingAccrued, 9}, {&d.NextFundingStep, 10}, {&d.CurrentFunding, 12}, {&d.MarkPrice, 15}, {&d.OpenInterest, 18}, {&d.ClampMin, 22}, {&d.ClampMax, 23}} {
+		*x.p, _, e = wire.Decimal(a, x.i)
+		if e != nil {
+			return d, e
+		}
 	}
-	if d.SpotPrice, err = wire.DecOr(a, 4, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if d.InsuranceFundBalance, err = wire.DecOr(a, 6, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if mts, _, merr := wire.Mts(a, 9); merr != nil {
-		return d, merr
-	} else {
-		d.NextFundingEventMTS = mts
-	}
-	if d.NextFundingAccrued, err = wire.DecOr(a, 10, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if d.NextFundingStep, err = wire.DecOr(a, 11, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if d.CurrentFunding, err = wire.DecOr(a, 13, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if d.MarkPrice, err = wire.DecOr(a, 16, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if d.OpenInterest, err = wire.DecOr(a, 19, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if d.ClampMin, err = wire.DecOr(a, 22, types.Decimal{}); err != nil {
-		return d, err
-	}
-	if d.ClampMax, err = wire.DecOr(a, 23, types.Decimal{}); err != nil {
-		return d, err
-	}
-	return d, nil
+	d.NextFundingEventMTS, _, e = wire.Mts(a, 8)
+	return d, e
 }
 
 func liquidationFromWire(a []any) (Liquidation, error) {
-	l := Liquidation{}
-	if err := wire.AssertMinLength(a, 8, "liquidation"); err != nil {
-		return l, err
+	var l Liquidation
+	if e := wire.AssertMinLength(a, 12, "liquidation"); e != nil {
+		return l, e
 	}
-	var err error
-	l.PositionID = wire.IntOr(a, 0, 0)
-	if mts, _, merr := wire.Mts(a, 1); merr != nil {
-		return l, merr
-	} else {
-		l.MTS = mts
+	var e error
+	l.MessageType, e = wire.RequiredString(a, 0)
+	if e != nil {
+		return l, e
 	}
-	sym, _ := wire.Str(a, 3)
+	l.PositionID, e = wire.MustInt(a, 1, "liquidation position")
+	if e != nil {
+		return l, e
+	}
+	l.Timestamp, e = wire.RequiredDecimal(a, 2)
+	if e != nil {
+		return l, e
+	}
+	whole := strings.Split(l.Timestamp.CanonicalString(), ".")[0]
+	n, e := strconv.ParseInt(whole, 10, 64)
+	if e != nil || n < 0 {
+		return l, &types.ProtocolError{Message: "invalid liquidation timestamp"}
+	}
+	l.MTS = types.Millis(n)
+	sym, e := wire.RequiredString(a, 4)
+	if e != nil {
+		return l, e
+	}
 	l.Symbol = types.Symbol(sym)
-	if l.Amount, err = wire.DecOr(a, 4, types.Decimal{}); err != nil {
-		return l, err
+	for _, x := range []struct {
+		p *types.Decimal
+		i int
+	}{{&l.Amount, 5}, {&l.BasePrice, 6}, {&l.PriceAcquired, 11}} {
+		*x.p, e = wire.RequiredDecimal(a, x.i)
+		if e != nil {
+			return l, e
+		}
 	}
-	if l.BasePrice, err = wire.DecOr(a, 5, types.Decimal{}); err != nil {
-		return l, err
+	l.IsMatch, e = wire.MustInt(a, 8, "liquidation match")
+	if e != nil {
+		return l, e
 	}
-	l.IsMatch = wire.IntOr(a, 6, 0)
-	l.IsMarketSold = wire.IntOr(a, 7, 0)
-	if l.PriceAcquired, err = wire.DecOr(a, 9, types.Decimal{}); err != nil {
-		return l, err
-	}
-	return l, nil
+	l.IsMarketSold, e = wire.MustInt(a, 9, "liquidation market flag")
+	return l, e
 }
 
 func fundingStatsFromWire(a []any) (FundingStatsEntry, error) {
-	e := FundingStatsEntry{}
-	if err := wire.AssertMinLength(a, 4, "funding stats entry"); err != nil {
-		return e, err
+	var out FundingStatsEntry
+	if e := wire.AssertMinLength(a, 12, "funding statistics"); e != nil {
+		return out, e
 	}
-	var err error
-	if mts, _, merr := wire.Mts(a, 0); merr != nil {
-		return e, merr
-	} else {
-		e.MTS = mts
+	n, e := wire.MustInt(a, 0, "funding statistics timestamp")
+	if e != nil {
+		return out, e
 	}
-	if e.FRR, err = wire.DecOr(a, 3, types.Decimal{}); err != nil {
-		return e, err
+	out.MTS = types.Millis(n)
+	for _, x := range []struct {
+		p *types.Decimal
+		i int
+	}{{&out.FRR, 3}, {&out.AveragePeriod, 4}, {&out.FundingProvided, 7}, {&out.FundingUsed, 8}, {&out.FundingBelowThreshold, 11}} {
+		*x.p, e = wire.RequiredDecimal(a, x.i)
+		if e != nil {
+			return out, e
+		}
 	}
-	if e.AverageRate, err = wire.DecOr(a, 4, types.Decimal{}); err != nil {
-		return e, err
-	}
-	if e.AveragePeriod, err = wire.DecOr(a, 5, types.Decimal{}); err != nil {
-		return e, err
-	}
-	if e.FundingUsed, err = wire.DecOr(a, 6, types.Decimal{}); err != nil {
-		return e, err
-	}
-	if e.FundingProvided, err = wire.DecOr(a, 7, types.Decimal{}); err != nil {
-		return e, err
-	}
-	return e, nil
+	return out, nil
 }
 
 // ---------- exported decoders (shared with the websocket package) ----------

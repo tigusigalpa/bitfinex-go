@@ -47,6 +47,7 @@ func (s *Service) UserInfo(ctx context.Context) (*types.Response[UserInfo], erro
 // Summary returns POST /auth/r/summary — 30-day fee/LEO/
 // derivatives summary. The shape is semi-documented; rows are
 // preserved untyped.
+// Deprecated: use SummaryTyped for the documented typed contract.
 func (s *Service) Summary(ctx context.Context) (*types.Response[any], error) {
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/summary", nil, readBucket())
 	if err != nil {
@@ -57,10 +58,10 @@ func (s *Service) Summary(ctx context.Context) (*types.Response[any], error) {
 
 // LoginHistory returns POST /auth/r/logins/hist.
 func (s *Service) LoginHistory(ctx context.Context, q *types.HistoryQuery) (*types.Response[[]LoginEntry], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(250, false); err != nil {
 		return nil, err
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/logins/hist", q.Body(), readBucket())
+	r, err := s.t.PostAuth(ctx, "v2/auth/r/logins/hist", historyBody(q), readBucket())
 	if err != nil {
 		return nil, err
 	}
@@ -81,6 +82,7 @@ func (s *Service) LoginHistory(ctx context.Context, q *types.HistoryQuery) (*typ
 
 // Permissions returns POST /auth/r/permissions — the key's
 // permission matrix (shape varies; preserved untyped).
+// Deprecated: use PermissionsTyped for the documented typed contract.
 func (s *Service) Permissions(ctx context.Context) (*types.Response[any], error) {
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/permissions", nil, readBucket())
 	if err != nil {
@@ -92,13 +94,24 @@ func (s *Service) Permissions(ctx context.Context) (*types.Response[any], error)
 // GenerateToken sends POST /auth/w/token — mints a short-lived
 // auth token for this API key (e.g. for untrusted contexts).
 // caps e.g. ["orders","funding"]. Write: never retried.
+// Deprecated: use GenerateTokenTyped for the documented typed contract.
 func (s *Service) GenerateToken(ctx context.Context, ttlSeconds int, caps []string, writePermission bool) (*types.Response[any], error) {
 	if ttlSeconds <= 0 {
 		return nil, &types.ValidationError{Field: "ttl", Message: "token ttl must be positive seconds"}
 	}
-	body := map[string]any{"ttl": ttlSeconds}
+	codes := append([]string(nil), caps...)
+	aliases := map[string]string{"account": "a", "orders": "o", "funding": "f", "settings": "s", "wallets": "w", "withdraw": "wd", "balance": "bp"}
+	for i, c := range codes {
+		if v, ok := aliases[c]; ok {
+			codes[i] = v
+		}
+	}
+	if e := (TokenRequest{TTLSeconds: ttlSeconds, Capabilities: codes, WritePermission: writePermission}).Validate(); e != nil {
+		return nil, e
+	}
+	body := map[string]any{"scope": "api", "ttl": ttlSeconds}
 	if len(caps) > 0 {
-		body["caps"] = caps
+		body["caps"] = codes
 	}
 	if writePermission {
 		body["writePermission"] = true
@@ -112,11 +125,12 @@ func (s *Service) GenerateToken(ctx context.Context, ttlSeconds int, caps []stri
 
 // AuditHistory returns POST /auth/r/audit/hist — account change
 // audit trail (shape varies; preserved untyped).
+// Deprecated: use AuditHistoryTyped for the documented typed contract.
 func (s *Service) AuditHistory(ctx context.Context, q *types.HistoryQuery) (*types.Response[any], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(500, false); err != nil {
 		return nil, err
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/audit/hist", q.Body(), readBucket())
+	r, err := s.t.PostAuth(ctx, "v2/auth/r/audit/hist", historyBody(q), readBucket())
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +140,7 @@ func (s *Service) AuditHistory(ctx context.Context, q *types.HistoryQuery) (*typ
 // Ledgers returns POST /auth/r/ledgers[/{currency}]/hist.
 // Documented retention: up to ~6 years.
 func (s *Service) Ledgers(ctx context.Context, currency string, q *types.HistoryQuery) (*types.Response[[]LedgerEntry], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(2500, false); err != nil {
 		return nil, err
 	}
 	path := "v2/auth/r/ledgers"
@@ -134,7 +148,7 @@ func (s *Service) Ledgers(ctx context.Context, currency string, q *types.History
 		path += "/" + url.PathEscape(strings.ToUpper(strings.TrimSpace(currency)))
 	}
 	path += "/hist"
-	r, err := s.t.PostAuth(ctx, path, q.Body(), readBucket())
+	r, err := s.t.PostAuth(ctx, path, historyBody(q), readBucket())
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +249,7 @@ func (r AlertSetRequest) Validate() error {
 }
 
 // AlertSet sends POST /auth/w/alert/set. Never retried.
+// Deprecated: use AlertSetTyped for the documented typed contract.
 func (s *Service) AlertSet(ctx context.Context, req AlertSetRequest) (*types.Response[any], error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
@@ -252,6 +267,7 @@ func (s *Service) AlertSet(ctx context.Context, req AlertSetRequest) (*types.Res
 
 // AlertDelete sends POST /auth/w/alert/price:{symbol}:{price}/del.
 // Never retried.
+// Deprecated: use AlertDeleteTyped for the documented typed contract.
 func (s *Service) AlertDelete(ctx context.Context, symbol string, price types.Decimal) (*types.Response[any], error) {
 	sym, err := types.ParseSymbol(symbol)
 	if err != nil {
@@ -270,10 +286,11 @@ func (s *Service) AlertDelete(ctx context.Context, symbol string, price types.De
 
 // Settings returns POST /auth/r/settings — the user settings
 // map, or only the given keys.
+// Deprecated: use SettingsTyped for the documented typed contract.
 func (s *Service) Settings(ctx context.Context, keys []string) (*types.Response[any], error) {
 	body := map[string]any{}
 	if len(keys) > 0 {
-		body["settings"] = keys
+		body["keys"] = keys
 	}
 	r, err := s.t.PostAuth(ctx, "v2/auth/r/settings", body, readBucket())
 	if err != nil {
@@ -283,6 +300,7 @@ func (s *Service) Settings(ctx context.Context, keys []string) (*types.Response[
 }
 
 // SettingsSet sends POST /auth/w/settings/set. Never retried.
+// Deprecated: use SettingsSetTyped for the documented typed contract.
 func (s *Service) SettingsSet(ctx context.Context, settings map[string]any) (*types.Response[any], error) {
 	if len(settings) == 0 {
 		return nil, &types.ValidationError{Field: "settings", Message: "settings map must not be empty"}
@@ -297,6 +315,7 @@ func (s *Service) SettingsSet(ctx context.Context, settings map[string]any) (*ty
 
 // SettingsDelete sends POST /auth/w/settings/del for the given
 // keys. Never retried.
+// Deprecated: use SettingsDeleteTyped for the documented typed contract.
 func (s *Service) SettingsDelete(ctx context.Context, keys []string) (*types.Response[any], error) {
 	if len(keys) == 0 {
 		return nil, &types.ValidationError{Field: "settings", Message: "settings keys must not be empty"}

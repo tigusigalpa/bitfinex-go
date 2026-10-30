@@ -10,15 +10,15 @@ Unofficial Go client library for the **Bitfinex API v2** (REST + WebSocket).
 - API coverage and status per endpoint: [docs/endpoint-coverage.md](docs/endpoint-coverage.md)
 - Only **API v2** is supported. REST v1 is intentionally excluded.
 
-The v1.1.0 release hardens signing, HTTP errors, validation and WebSocket lifecycle.
-Coverage is incomplete: several legacy endpoints still return raw data, and history
-methods fetch one page. Review the [audit and remaining limitations](docs/review-v1.1.0.md)
-and [upgrade notes](docs/upgrade-v1.1.0.md) before using private write operations.
+The v1.2.0 release adds typed contracts for the previously deferred endpoints,
+correct derivative collateral management, and lazy history iterators.
+See the [review](docs/review-v1.2.0.md), [upgrade notes](docs/upgrade-v1.2.0.md)
+and [pagination guide](docs/pagination.md). Legacy signatures remain available.
 
 ## Install
 
 ```bash
-go get github.com/tigusigalpa/bitfinex-go@v1.1.0
+go get github.com/tigusigalpa/bitfinex-go@v1.2.0
 ```
 
 ## Quickstart — public, read-only

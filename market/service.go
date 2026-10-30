@@ -32,23 +32,22 @@ func listData(r *httpx.Result, what string) ([]any, error) {
 // PlatformStatus returns GET /platform/status — 1 = operative,
 // 0 = maintenance.
 func (s *Service) PlatformStatus(ctx context.Context) (*types.Response[int], error) {
-	r, err := s.t.GetPublic(ctx, "platform/status", nil, readBucket("platform-status"))
-	if err != nil {
-		return nil, err
+	r, e := s.t.GetPublic(ctx, "platform/status", nil, readBucket("platform-status"))
+	if e != nil {
+		return nil, e
 	}
-	rows, err := listData(r, "platform status")
-	if err != nil {
-		return nil, err
+	a, e := wire.AsArr(r.Data, "platform status")
+	if e != nil {
+		return nil, e
 	}
-	status := 0
-	if len(rows) > 0 {
-		if n, ok := rows[0].(interface{ String() string }); ok {
-			if n.String() == "1" {
-				status = 1
-			}
-		}
+	n, e := wire.MustInt(a, 0, "platform status")
+	if e != nil {
+		return nil, e
 	}
-	return types.NewResponse(status, httpx.Meta(r)), nil
+	if n != 0 && n != 1 {
+		return nil, &types.ProtocolError{Message: "invalid platform status"}
+	}
+	return types.NewResponse(int(n), httpx.Meta(r)), nil
 }
 
 // Tickers returns GET /tickers for the given symbols, or all
@@ -115,14 +114,8 @@ func (s *Service) Ticker(ctx context.Context, symbol string) (*types.Response[Ti
 
 // TickersHistory returns GET /tickers/hist for given symbols.
 func (s *Service) TickersHistory(ctx context.Context, symbols []string, q *types.HistoryQuery) (*types.Response[[]Ticker], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(250, true); err != nil {
 		return nil, err
-	}
-	if err := q.Validate(); err != nil {
-		return nil, err
-	}
-	if q != nil && q.Limit > 250 {
-		return nil, &types.ValidationError{Field: "limit", Message: "ticker history limit must not exceed 250"}
 	}
 	if len(symbols) == 0 {
 		return nil, &types.ValidationError{Field: "symbols", Message: "at least one symbol required"}
@@ -180,7 +173,7 @@ func (s *Service) TickersHistory(ctx context.Context, symbols []string, q *types
 // Trades returns GET /trades/{symbol}/hist — newest first unless
 // sort=1.
 func (s *Service) Trades(ctx context.Context, symbol string, q *types.HistoryQuery) (*types.Response[[]Trade], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(10000, true); err != nil {
 		return nil, err
 	}
 	sym, err := types.ParseSymbol(symbol)
@@ -281,7 +274,7 @@ func (s *Service) Book(ctx context.Context, symbol, precision string, q *types.H
 // e.g. key "pos.size", size "1m", symbol "tBTCUSD", side "long",
 // section "last" or "hist".
 func (s *Service) Stats(ctx context.Context, key, size, symbol, side, section string, q *types.HistoryQuery) (*types.Response[[]StatEntry], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(10000, true); err != nil {
 		return nil, err
 	}
 	sym, err := types.ParseSymbol(symbol)
@@ -330,7 +323,7 @@ var candleRe = regexp.MustCompile(`^(trade|funding):[0-9]+[mhdDWM]+:`)
 // "trade:1m:fUSD:p30". For section "last" the server returns a
 // single candle row, decoded into a one-element slice.
 func (s *Service) Candles(ctx context.Context, candle, section string, q *types.HistoryQuery) (*types.Response[[]Candle], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(10000, true); err != nil {
 		return nil, err
 	}
 	if !candleRe.MatchString(candle) {
@@ -374,6 +367,7 @@ func (s *Service) Candles(ctx context.Context, candle, section string, q *types.
 // Configs returns GET /conf/pub:{action}:{object}[:{detail}] —
 // symbol maps, pair lists, currency labels. The response shape
 // varies by action; returned as decoded wire data.
+// Deprecated: use ConfigsTyped for the documented typed contract.
 func (s *Service) Configs(ctx context.Context, action, object, detail string) (*types.Response[any], error) {
 	path := "conf/pub:" + escapeSeg(action) + ":" + escapeSeg(object)
 	if detail != "" {
@@ -425,7 +419,7 @@ func (s *Service) DerivativesStatus(ctx context.Context, keys ...string) (*types
 
 // DerivativesStatusHistory returns GET /status/deriv/{key}/hist.
 func (s *Service) DerivativesStatusHistory(ctx context.Context, key string, q *types.HistoryQuery) (*types.Response[[]DerivativeStatus], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(5000, true); err != nil {
 		return nil, err
 	}
 	r, err := s.t.GetPublic(ctx, "status/deriv/"+escapeSeg(key)+"/hist", q.Params(), readBucket("public"))
@@ -438,7 +432,7 @@ func (s *Service) DerivativesStatusHistory(ctx context.Context, key string, q *t
 	}
 	out := make([]DerivativeStatus, 0, len(rows))
 	for _, row := range rows {
-		d, derr := derivStatusFromWire(row)
+		d, derr := DerivativeStatusHistoryFromWire(row, types.Symbol(key))
 		if derr != nil {
 			return nil, derr
 		}
@@ -449,10 +443,10 @@ func (s *Service) DerivativesStatusHistory(ctx context.Context, key string, q *t
 
 // Liquidations returns GET /liquidations/hist.
 func (s *Service) Liquidations(ctx context.Context, q *types.HistoryQuery) (*types.Response[[]Liquidation], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(500, true); err != nil {
 		return nil, err
 	}
-	r, err := s.t.GetPublic(ctx, "liquidations/hist", q.Params(), readBucket("public"))
+	r, err := s.t.GetPublic(ctx, "liquidations/hist", q.Params(), readBucket("liquidations"))
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +464,7 @@ func (s *Service) Liquidations(ctx context.Context, q *types.HistoryQuery) (*typ
 		for _, row := range inner {
 			arr, ok := row.([]any)
 			if !ok {
-				continue
+				return nil, &types.ProtocolError{Message: "invalid liquidation row"}
 			}
 			l, derr := liquidationFromWire(arr)
 			if derr != nil {
@@ -486,7 +480,7 @@ func (s *Service) Liquidations(ctx context.Context, q *types.HistoryQuery) (*typ
 // — leaderboard rows. key e.g. "plu_diff", timeframe "1D"/"1W"/"1M",
 // section "hist" or "last".
 func (s *Service) Rankings(ctx context.Context, key, timeframe, symbol, section string, q *types.HistoryQuery) (*types.Response[[]RankingRow], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(10000, true); err != nil {
 		return nil, err
 	}
 	sym, err := types.ParseSymbol(symbol)
@@ -505,15 +499,9 @@ func (s *Service) Rankings(ctx context.Context, key, timeframe, symbol, section 
 	}
 	out := make([]RankingRow, 0, len(rows))
 	for _, row := range rows {
-		rr := RankingRow{}
-		if mts, _, merr := wire.Mts(row, 0); merr != nil {
-			return nil, merr
-		} else {
-			rr.MTS = mts
-		}
-		rr.Username = wire.StrOr(row, 2, "")
-		if len(row) > 3 {
-			rr.Extra = append([]any(nil), row[3:]...)
+		rr, e := rankingFromWire(row)
+		if e != nil {
+			return nil, e
 		}
 		out = append(out, rr)
 	}
@@ -522,14 +510,14 @@ func (s *Service) Rankings(ctx context.Context, key, timeframe, symbol, section 
 
 // FundingStats returns GET /funding/stats/{symbol}/hist.
 func (s *Service) FundingStats(ctx context.Context, symbol string, q *types.HistoryQuery) (*types.Response[[]FundingStatsEntry], error) {
-	if err := q.Validate(); err != nil {
+	if err := q.ValidateFor(250, false); err != nil {
 		return nil, err
 	}
 	sym, err := types.ParseSymbol(symbol)
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.t.GetPublic(ctx, "funding/stats/"+sym.String()+"/hist", q.Params(), readBucket("public"))
+	r, err := s.t.GetPublic(ctx, "funding/stats/"+sym.String()+"/hist", historyParams(q), readBucket("public"))
 	if err != nil {
 		return nil, err
 	}
@@ -550,6 +538,7 @@ func (s *Service) FundingStats(ctx context.Context, symbol string, q *types.Hist
 
 // VASPs returns GET /ext/vasps — the registry of virtual asset
 // service providers (shape varies; returned as decoded wire data).
+// Deprecated: use VASPsTyped for the documented typed contract.
 func (s *Service) VASPs(ctx context.Context) (*types.Response[any], error) {
 	r, err := s.t.GetPublic(ctx, "ext/vasps", nil, readBucket("public"))
 	if err != nil {
@@ -560,44 +549,12 @@ func (s *Service) VASPs(ctx context.Context) (*types.Response[any], error) {
 
 // MarketAveragePrice POSTs /calc/trade/avg — the hypothetical
 // average fill price for amount on the given symbols.
+// Deprecated: use MarketAveragePriceTyped for the documented typed contract.
 func (s *Service) MarketAveragePrice(ctx context.Context, symbols []string, amount types.Decimal) (*types.Response[MarketAvgPrice], error) {
-	if !amount.IsValid() || amount.IsZero() {
-		return nil, &types.ValidationError{Field: "amount", Message: "market average price amount must be non-zero"}
+	if len(symbols) != 1 {
+		return nil, &types.ValidationError{Field: "symbols", Message: "average price calculation takes exactly one symbol; use MarketAveragePriceTyped"}
 	}
-	if len(symbols) == 0 {
-		return nil, &types.ValidationError{Field: "symbols", Message: "at least one symbol required"}
-	}
-	parts := make([]string, len(symbols))
-	for i, raw := range symbols {
-		sym, err := types.ParseSymbol(raw)
-		if err != nil {
-			return nil, err
-		}
-		parts[i] = sym.String()
-	}
-	r, err := s.t.PostPublic(ctx, "calc/trade/avg", map[string]any{
-		"symbol": strings.Join(parts, ","),
-		"amount": amount.CanonicalString(),
-	}, httpx.RequestContext{Bucket: "calc", Idempotent: true})
-	if err != nil {
-		return nil, err
-	}
-	row, err := listData(r, "calc/trade/avg")
-	if err != nil {
-		return nil, err
-	}
-	res := MarketAvgPrice{}
-	if d, _, derr := wire.Decimal(row, 0); derr != nil {
-		return nil, derr
-	} else {
-		res.PriceAvg = d
-	}
-	if d, _, derr := wire.Decimal(row, 1); derr != nil {
-		return nil, derr
-	} else {
-		res.Amount = d
-	}
-	return types.NewResponse(res, httpx.Meta(r)), nil
+	return s.MarketAveragePriceTyped(ctx, AveragePriceRequest{Symbol: symbols[0], Amount: amount})
 }
 
 // ForeignExchangeRate POSTs /calc/fx — indicative conversion

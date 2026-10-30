@@ -68,13 +68,15 @@ type Event struct {
 	Action string `json:"action,omitempty"`
 
 	// Public channel payloads.
-	Ticker        *market.Ticker         `json:"ticker,omitempty"`
-	Trades        []market.Trade         `json:"trades,omitempty"`
-	FundingTrades []funding.FundingTrade `json:"funding_trades,omitempty"` // fte/ftu
-	BookLevel     *market.BookLevel      `json:"book_level,omitempty"`
-	BookSnapshot  []market.BookLevel     `json:"book_snapshot,omitempty"`
-	Candles       []market.Candle        `json:"candles,omitempty"`
-	Status        any                    `json:"status,omitempty"`
+	Ticker           *market.Ticker           `json:"ticker,omitempty"`
+	Trades           []market.Trade           `json:"trades,omitempty"`
+	FundingTrades    []funding.FundingTrade   `json:"funding_trades,omitempty"` // fte/ftu
+	BookLevel        *market.BookLevel        `json:"book_level,omitempty"`
+	BookSnapshot     []market.BookLevel       `json:"book_snapshot,omitempty"`
+	Candles          []market.Candle          `json:"candles,omitempty"`
+	Status           any                      `json:"status,omitempty"`
+	DerivativeStatus *market.DerivativeStatus `json:"derivative_status,omitempty"`
+	Liquidations     []market.Liquidation     `json:"liquidations,omitempty"`
 
 	// Auth channel payload (chanID 0).
 	Auth *AuthEvent `json:"auth,omitempty"`
@@ -91,7 +93,10 @@ type Event struct {
 // Stream is the two/three-letter stream tag; exactly one of the
 // typed fields below is populated based on it.
 type AuthEvent struct {
-	Stream string `json:"stream"`
+	Stream  string             `json:"stream"`
+	Balance *types.BalanceInfo `json:"balance,omitempty"`
+	Margin  *types.MarginInfo  `json:"margin,omitempty"`
+	Funding *types.FundingInfo `json:"funding,omitempty"`
 
 	Orders        []orders.Order          `json:"orders,omitempty"`         // os/on/ou/oc
 	Positions     []positions.Position    `json:"positions,omitempty"`      // ps/pn/pu/pc

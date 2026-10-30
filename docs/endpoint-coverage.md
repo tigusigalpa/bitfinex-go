@@ -1,28 +1,18 @@
 # Endpoint coverage — Bitfinex API v2
 
-Version: **v1.1.0**. Review dates: **2026-10-29–30** (Europe/Moscow).
+Version: **v1.2.0**. Review date: **2026-10-30**.
 
-This is a coverage inventory, not a claim of full exchange compatibility. The
-original v1.0.0 inventory overstated test coverage and used placeholder links.
+The contracts deferred in v1.1.0 now have typed entry points. Legacy raw
+signatures remain for source compatibility. The inventory below identifies
+the preferred methods. Verification uses official schemas, synthetic fixtures,
+local HTTP servers and fake WebSocket connections; no private exchange
+operations or real funds were used.
 
-**implemented** means a typed offline implementation with deterministic tests.
-**deferred** means the requested complete typed contract is not delivered; some
-legacy v1.0.0 wrappers remain callable for compatibility. Their raw/partial data
-must be checked by the application. Typed replacements and remaining schema
-verification are planned for **v1.2.0**; this is a roadmap, not a guarantee.
-
-Fixtures for authenticated REST routing/signing, success decoding, and HTTP 503
-errors are inline in `client_test.go::TestRESTServiceContracts`. These synthetic
-fixtures exercise existing wrappers; they do not independently prove that every
-legacy positional schema matches the exchange. Public fixture and malformed-data
-tests are in `market/*test.go`; WebSocket tests are in `websocket/*test.go`.
-The original labels below describe implementation scope; consult the review report
-for the exact verification limits. No private exchange operations were performed.
-
-Re-audited official contracts: ticker/history, REST book, candles, order submit/
-update/cancel/cancel-multi, funding offer submit, transfer, withdrawal, WebSocket
-requirements/auth/general/checksum. Other pages are reference links, not a claim
-that a fresh complete schema audit was performed. See [review-v1.1.0.md](review-v1.1.0.md).
+New evidence: `contracts_v120_test.go`, `account_v120_test.go`,
+`market/contracts_v120_test.go`, `pagination_v120_test.go`,
+`types/iterator_test.go`, and `websocket/contracts_v120_test.go`.
+See [review](review-v1.2.0.md), [upgrade notes](upgrade-v1.2.0.md),
+and [pagination](pagination.md) for precise scope and limits.
 
 ## Common specifications
 
@@ -44,23 +34,23 @@ that a fresh complete schema audit was performed. See [review-v1.1.0.md](review-
 
 | Endpoint | Method | Request | Response | Status | Tests | Docs |
 |---|---|---|---|---|---|---|
-| `GET /platform/status` | `Market.PlatformStatus(ctx)` | — | `int` | deferred (contract fixture, v1.2.0) | transport-only fixture | [Reference](https://docs.bitfinex.com/reference/rest-public-platform-status) |
+| `GET /platform/status` | `Market.PlatformStatus(ctx)` | — | `int` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-platform-status) |
 | `GET /tickers` | `Market.Tickers(ctx, symbols...)` | symbols | `[]Ticker` | implemented | positive | [Reference](https://docs.bitfinex.com/reference/rest-public-tickers) |
 | `GET /ticker/{symbol}` | `Market.Ticker(ctx, symbol)` | symbol | `Ticker` | implemented | pos+neg | [Reference](https://docs.bitfinex.com/reference/rest-public-ticker) |
 | `GET /tickers/hist` | `Market.TickersHistory(ctx, symbols, q)` | symbols+`HistoryQuery` | `[]Ticker` | implemented | `market/hardening_test.go`: success + malformed history | [Reference](https://docs.bitfinex.com/reference/rest-public-tickers-history) |
 | `GET /trades/{symbol}/hist` | `Market.Trades(ctx, symbol, q)` | `HistoryQuery` | `[]Trade` | implemented | positive | [Reference](https://docs.bitfinex.com/reference/rest-public-trades) |
 | `GET /book/{symbol}/{prec}` | `Market.Book(ctx, symbol, prec, q)` | prec P0–P4/R0 | `[]BookLevel` | implemented | pos+neg | [Reference](https://docs.bitfinex.com/reference/rest-public-book) |
-| `GET /stats1/{k}:{s}:{sym}:{side}/{sec}` | `Market.Stats(ctx, key,size,sym,side,sec,q)` | path params | `[]StatEntry` | deferred (contract fixtures, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-stats) |
+| `GET /stats1/{k}:{s}:{sym}:{side}/{sec}` | `Market.Stats(ctx, key,size,sym,side,sec,q)` | path params | `[]StatEntry` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-stats) |
 | `GET /candles/{candle}/{sec}` | `Market.Candles(ctx, candle, sec, q)` | candle key | `[]Candle` | implemented | pos+neg | [Reference](https://docs.bitfinex.com/reference/rest-public-candles) |
-| `GET /conf/pub:{a}:{o}:{d}` | `Market.Configs(ctx, a, o, d)` | path params | `any` (shape varies) | deferred (typed contract, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-conf) |
-| `GET /status/deriv` | `Market.DerivativesStatus(ctx, keys...)` | keys | `[]DerivativeStatus` | deferred (contract fixtures, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-derivatives-status) |
-| `GET /status/deriv/{key}/hist` | `Market.DerivativesStatusHistory(ctx, key, q)` | key | `[]DerivativeStatus` | deferred (contract fixtures, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-derivatives-status-history) |
-| `GET /liquidations/hist` | `Market.Liquidations(ctx, q)` | `HistoryQuery` | `[]Liquidation` | deferred (contract fixtures, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-liquidations) |
-| `GET /rankings/{k}:{tf}:{sym}/{sec}` | `Market.Rankings(ctx, k, tf, sym, sec, q)` | path params | `[]RankingRow` | deferred (typed contract, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-rankings) |
-| `GET /funding/stats/{sym}/hist` | `Market.FundingStats(ctx, sym, q)` | `HistoryQuery` | `[]FundingStatsEntry` | deferred (contract fixtures, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-funding-stats) |
-| `GET /ext/vasps` | `Market.VASPs(ctx)` | — | `any` (registry shape) | deferred (typed contract, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/virtual-asset-service-providers) |
-| `POST /calc/trade/avg` | `Market.MarketAveragePrice(ctx, symbols, amount)` | symbols+Decimal | `MarketAvgPrice` | deferred (contract fixtures, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-market-average-price) |
-| `POST /calc/fx` | `Market.ForeignExchangeRate(ctx, ccy1, ccy2)` | currencies | `Decimal` | deferred (contract fixtures, v1.2.0) | wrapper compile only; contract fixtures deferred | [Reference](https://docs.bitfinex.com/reference/rest-public-foreign-exchange-rate) |
+| `GET /conf/pub:{a}:{o}:{d}` | `Market.ConfigsTyped(ctx, keys...)` | path params | `[]Configuration` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-conf) |
+| `GET /status/deriv` | `Market.DerivativesStatus(ctx, keys...)` | keys | `[]DerivativeStatus` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-derivatives-status) |
+| `GET /status/deriv/{key}/hist` | `Market.DerivativesStatusHistory(ctx, key, q)` | key | `[]DerivativeStatus` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-derivatives-status-history) |
+| `GET /liquidations/hist` | `Market.Liquidations(ctx, q)` | `HistoryQuery` | `[]Liquidation` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-liquidations) |
+| `GET /rankings/{k}:{tf}:{sym}/{sec}` | `Market.Rankings(ctx, k, tf, sym, sec, q)` | path params | `[]RankingRow` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-rankings) |
+| `GET /funding/stats/{sym}/hist` | `Market.FundingStats(ctx, sym, q)` | `HistoryQuery` | `[]FundingStatsEntry` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-funding-stats) |
+| `GET /ext/vasps` | `Market.VASPsTyped(ctx)` | — | `[]VASP` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/virtual-asset-service-providers) |
+| `POST /calc/trade/avg` | `Market.MarketAveragePriceTyped(ctx, request)` | symbols+Decimal | `MarketAvgPrice` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-market-average-price) |
+| `POST /calc/fx` | `Market.ForeignExchangeRate(ctx, ccy1, ccy2)` | currencies | `Decimal` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-public-foreign-exchange-rate) |
 
 ## Authenticated REST — wallets / orders / trades / ledger
 
@@ -76,24 +66,24 @@ that a fresh complete schema audit was performed. See [review-v1.1.0.md](review-
 | `POST /auth/r/orders/hist`, `/{sym}/hist` | `Orders.History(ctx, sym, q)` | `HistoryQuery` | `[]Order` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-orders-history) |
 | `POST /auth/r/order/{sym}:{id}/trades` | `Orders.OrderTrades(ctx, sym, id)` | path | `[]TradeExecution` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-order-trades) |
 | `POST /auth/r/trades[/{sym}]/hist` | `Orders.Trades(ctx, sym, q)` | `HistoryQuery` | `[]TradeExecution` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-trades) |
-| `POST /auth/r/orders/otc/{sym}/hist` | `Orders.OTCHistory(ctx, sym, q)` | `HistoryQuery` | `[]Order` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/otc-orders-history) |
+| `POST /auth/r/orders/otc/{sym}/hist` | `Orders.OTCHistoryTyped(ctx, sym, q)` | `HistoryQuery` | `[]OTCOrder` | implemented | typed success + malformed + server failure (`contracts_v120_test.go`) | [Reference](https://docs.bitfinex.com/reference/otc-orders-history) |
 | `POST /auth/r/ledgers[/{ccy}]/hist` | `Account.Ledgers(ctx, ccy, q)` | `HistoryQuery` | `[]LedgerEntry` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-ledgers) |
 
 ## Authenticated REST — positions / derivatives (`positions`)
 
 | Endpoint | Method | Request | Response | Status | Tests | Docs |
 |---|---|---|---|---|---|---|
-| `POST /auth/r/info/margin/{key}` | `Positions.MarginInfo(ctx, key)` | key | `[]KeyValueInfo` | deferred (contract fixtures, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-info-margin) |
+| `POST /auth/r/info/margin/{key}` | `Positions.MarginInfoTyped(ctx, key)` | key | `[]types.MarginInfo` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-info-margin) |
 | `POST /auth/r/positions` | `Positions.Active(ctx)` | — | `[]Position` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-positions) |
 | `POST /auth/w/position/claim` | `Positions.Claim(ctx, ClaimRequest)` | typed | `Notification` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-position-claim) |
 | `POST /auth/w/position/increase` | `Positions.Increase(ctx, IncreaseRequest)` | typed | `Notification` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-position-increase) |
-| `POST /auth/r/position/increase/info` | `Positions.IncreaseInfo(ctx, sym, amt)` | typed | `any` (preview) | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-increase-position-info) |
+| `POST /auth/r/position/increase/info` | `Positions.IncreaseInfoTyped(ctx, sym, amount)` | typed | `IncreasePreview` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-increase-position-info) |
 | `POST /auth/r/positions/hist` | `Positions.History(ctx, q)` | `HistoryQuery` | `[]Position` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-positions-hist) |
 | `POST /auth/r/positions/snap` | `Positions.Snapshot(ctx, q)` | `HistoryQuery` | `[]Position` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-positions-snap) |
 | `POST /auth/r/positions/audit` | `Positions.Audit(ctx, id, q)` | id+query | `[]Position` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-positions-audit) |
 | `POST /auth/w/position/update/funding/type` | `Positions.UpdateFundingType(ctx, sym, type)` | 0/1 | `Notification` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/update-position-funding-type) |
-| `POST /auth/w/deriv/collateral/set` | `Positions.SetDerivativeCollateral(ctx, sym, ccy)` | typed | `Notification` | deferred (typed contract, v1.2.0) | no contract fixture; legacy mismatch documented | [Reference](https://docs.bitfinex.com/reference/rest-auth-deriv-pos-collateral-set) |
-| `POST /auth/calc/deriv/collateral/limits` | `Positions.DerivativeCollateralLimits(ctx, sym)` | symbol | `any` (limits) | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-calc-deriv-collateral-limits) |
+| `POST /auth/w/deriv/collateral/set` | `Positions.SetDerivativeCollateralAmount(ctx, sym, amount)` | typed | `OperationStatus` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-deriv-pos-collateral-set) |
+| `POST /auth/calc/deriv/collateral/limits` | `Positions.DerivativeCollateralLimitsTyped(ctx, sym)` | symbol | `CollateralLimits` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-calc-deriv-collateral-limits) |
 
 ## Authenticated REST — margin funding (`funding`)
 
@@ -112,36 +102,36 @@ that a fresh complete schema audit was performed. See [review-v1.1.0.md](review-
 | `POST /auth/r/funding/credits/{sym}` | `Funding.Credits(ctx, sym)` | symbol | `[]FundingCredit` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-funding-credits) |
 | `POST /auth/r/funding/credits/{sym}/hist` | `Funding.CreditsHistory(ctx, sym, q)` | `HistoryQuery` | `[]FundingCredit` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-funding-credits-hist) |
 | `POST /auth/r/funding/trades/{sym}/hist` | `Funding.TradesHistory(ctx, sym, q)` | `HistoryQuery` | `[]FundingTrade` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-funding-trades-hist) |
-| `POST /auth/r/info/funding/{key}` | `Funding.Info(ctx, key)` | key | `[]KeyValueInfo` | deferred (contract fixtures, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-info-funding) |
+| `POST /auth/r/info/funding/{key}` | `Funding.InfoTyped(ctx, symbol)` | key | `types.FundingInfo` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-info-funding) |
 
 ## Authenticated REST — account / transfers / payments / alerts / settings (`account`)
 
 | Endpoint | Method | Request | Response | Status | Tests | Docs |
 |---|---|---|---|---|---|---|
 | `POST /auth/r/info/user` | `Account.UserInfo(ctx)` | — | `UserInfo` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-info-user) |
-| `POST /auth/r/summary` | `Account.Summary(ctx)` | — | `any` (shape varies) | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-summary) |
+| `POST /auth/r/summary` | `Account.SummaryTyped(ctx)` | — | `AccountSummary` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-summary) |
 | `POST /auth/r/logins/hist` | `Account.LoginHistory(ctx, q)` | `HistoryQuery` | `[]LoginEntry` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-logins-hist) |
-| `POST /auth/r/permissions` | `Account.Permissions(ctx)` | — | `any` (matrix) | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/key-permissions) |
-| `POST /auth/w/token` | `Account.GenerateToken(ctx, ttl, caps, write)` | typed | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/generate-token) |
-| `POST /auth/r/audit/hist` | `Account.AuditHistory(ctx, q)` | `HistoryQuery` | `any` (audit rows) | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-audit-hist) |
+| `POST /auth/r/permissions` | `Account.PermissionsTyped(ctx)` | — | `[]Permission` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/key-permissions) |
+| `POST /auth/w/token` | `Account.GenerateTokenTyped(ctx, request)` | typed | `AuthToken` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/generate-token) |
+| `POST /auth/r/audit/hist` | `Account.AuditHistoryTyped(ctx, q)` | `HistoryQuery` | `[]AuditEntry` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-audit-hist) |
 | `POST /auth/w/transfer` | `Account.Transfer(ctx, TransferRequest)` | typed+`Confirm` | `Notification` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-transfer) |
 | `POST /auth/calc/order/avail` | `Account.AvailableBalanceForOrder(ctx, sym, type, amt, rate, lev)` | typed | `Decimal` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-calc-order-avail) |
 | `POST /auth/w/deposit/address` | `Account.DepositAddress(ctx, DepositAddressRequest)` | typed | `Notification` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-deposit-address) |
-| `POST /auth/r/deposit/address/all` | `Account.DepositAddresses(ctx)` | — | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/deposit-address-all) |
-| `POST /auth/w/deposit/invoice` | `Account.Invoice(ctx, InvoiceRequest)` | typed+`Confirm` | `Notification` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-deposit-invoice) |
-| `POST /auth/r/ext/invoice/payments` | `Account.InvoicePayments(ctx, limit)` | limit | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/lnx-invoice-payments) |
+| `POST /auth/r/deposit/address/all` | `Account.DepositAddressesTyped(ctx, request)` | — | `[]DepositAddress` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/deposit-address-all) |
+| `POST /auth/w/deposit/invoice` | `Account.InvoiceTyped(ctx, request)` | typed+`Confirm` | `GeneratedInvoice` | implemented | typed success + malformed + server failure (`contracts_v120_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-deposit-invoice) |
+| `POST /auth/r/ext/invoice/payments` | `Account.InvoicePaymentsTyped(ctx, query)` | limit | `LightningResult` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/lnx-invoice-payments) |
 | `POST /auth/w/withdraw` | `Account.Withdraw(ctx, WithdrawRequest)` | typed+`Confirm` | `Notification` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-withdraw) |
 | `POST /auth/r/movements[/{ccy}]/hist` | `Account.Movements(ctx, ccy, q)` | `HistoryQuery` | `[]Movement` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-movements) |
-| `POST /auth/r/movements/info` | `Account.MovementInfo(ctx, id)` | id | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/movement-info) |
+| `POST /auth/r/movements/info` | `Account.MovementInfoTyped(ctx, id)` | id | `MovementDetails` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/movement-info) |
 | `POST /auth/r/alerts` | `Account.Alerts(ctx)` | — | `[]Alert` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-alerts) |
-| `POST /auth/w/alert/set` | `Account.AlertSet(ctx, AlertSetRequest)` | typed | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-alert-set) |
-| `POST /auth/w/alert/price:{s}:{p}/del` | `Account.AlertDelete(ctx, sym, price)` | path | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-alert-del) |
-| `POST /auth/w/settings/set` | `Account.SettingsSet(ctx, map)` | settings | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-settings-set) |
-| `POST /auth/r/settings` | `Account.Settings(ctx, keys)` | keys | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-settings) |
-| `POST /auth/w/settings/del` | `Account.SettingsDelete(ctx, keys)` | keys | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-settings-del) |
-| `POST /auth/r/ext/wallets/transfers/free/count` | `Account.ThalexFreeTransferCount(ctx)` | — | `any` | deferred (typed contract, v1.2.0) | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/thalex-free-transfer-count) |
-| `POST /auth/w/ext/wallets/deposits/request` | — | — | — | **deferred** | — | Thalex wire contract requires a verified request/response schema before a typed DTO ships; planned for v1.2.0 after official schema verification (https://docs.bitfinex.com/reference/thalex-deposit-request) |
-| `POST /auth/w/ext/wallets/withdrawals/request` | — | — | — | **deferred** | — | Typed Thalex contract deferred to v1.2.0 pending official schema verification (https://docs.bitfinex.com/reference/thalex-withdrawal-request) |
+| `POST /auth/w/alert/set` | `Account.AlertSetTyped(ctx, request)` | typed | `Alert` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-alert-set) |
+| `POST /auth/w/alert/price:{s}:{p}/del` | `Account.AlertDeleteTyped(ctx, sym, price)` | path | `OperationStatus` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-alert-del) |
+| `POST /auth/w/settings/set` | `Account.SettingsSetTyped(ctx, settings)` | settings | `SettingsResult` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-settings-set) |
+| `POST /auth/r/settings` | `Account.SettingsTyped(ctx, keys)` | keys | `[]Setting` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-settings) |
+| `POST /auth/w/settings/del` | `Account.SettingsDeleteTyped(ctx, keys)` | keys | `SettingsResult` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/rest-auth-settings-del) |
+| `POST /auth/r/ext/wallets/transfers/free/count` | `Account.ThalexFreeTransferCountTyped(ctx)` | — | `FreeTransferCount` | implemented | contract fixtures (v1.2.0) | [Reference](https://docs.bitfinex.com/reference/thalex-free-transfer-count) |
+| `POST /auth/w/ext/wallets/deposits/request` | `Account.ThalexDeposit(ctx, request)` | `ThalexTransferRequest` + Confirm + OTP/U2F | `ThalexTransfer` | implemented | typed success, malformed, ambiguous write failure | [Reference](https://docs.bitfinex.com/reference/thalex-deposit-request) |
+| `POST /auth/w/ext/wallets/withdrawals/request` | `Account.ThalexWithdraw(ctx, request)` | `ThalexTransferRequest` + Confirm + OTP/U2F | `ThalexTransfer` | implemented | typed success, malformed, ambiguous write failure | [Reference](https://docs.bitfinex.com/reference/thalex-withdrawal-request) |
 
 ## Public WebSocket v2 (`websocket`)
 
@@ -152,7 +142,7 @@ that a fresh complete schema audit was performed. See [review-v1.1.0.md](review-
 | `book` P0–P4 | `SubscribeBook(sym, prec, freq, len)` | `BookSnapshot`, `BookLevel` deltas, `cs` | implemented | checksum unit | [Reference](https://docs.bitfinex.com/reference/ws-public-books) |
 | `book` R0 | `SubscribeBook(sym, "R0", …)` | raw order-id semantics (no mixing with P-rules) | implemented | book unit | [Reference](https://docs.bitfinex.com/reference/ws-public-raw-books) |
 | `candles` | `SubscribeCandles(key)` | `[]Candle` snapshots/updates | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-public-candles) |
-| `status` | `SubscribeStatus(key)` | `Status` raw payload | deferred (typed contract, v1.2.0) | decode | [Reference](https://docs.bitfinex.com/reference/ws-public-status) |
+| `status` | `SubscribeStatus(key)` | `DerivativeStatus` / `Liquidations` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-public-status) |
 
 ## Authenticated WebSocket v2 (`websocket`)
 
@@ -166,9 +156,9 @@ that a fresh complete schema audit was performed. See [review-v1.1.0.md](review-
 | `fcs/fcn/fcu/fcc` | `SubscribeAccount()` | `AuthEvent.Credits` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-funding-credits) |
 | `fls/fln/flu/flc` | `SubscribeAccount()` | `AuthEvent.Loans` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-funding-loans) |
 | `ws/wu` | `SubscribeAccount()` | `AuthEvent.Wallets` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-wallets) |
-| `bu` | `SubscribeAccount()` | `AuthEvent.Info` (loose payload) | deferred (typed contract, v1.2.0) | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-balance-info) |
-| `miu` | `SubscribeAccount()` | `AuthEvent.Info` | deferred (typed contract, v1.2.0) | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-margin-info) |
-| `fiu` | `SubscribeAccount()` | `AuthEvent.Info` | deferred (typed contract, v1.2.0) | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-funding) |
+| `bu` | `SubscribeAccount()` | `AuthEvent.Balance` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-balance-info) |
+| `miu` | `SubscribeAccount()` | `AuthEvent.Margin` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-margin-info) |
+| `fiu` | `SubscribeAccount()` | `AuthEvent.Funding` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-funding) |
 | `fte/ftu` | `SubscribeAccount()` | `AuthEvent.FundingTrades` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-funding-trades) |
 | `n` | `SubscribeAccount()` | `AuthEvent.Notification` | implemented | decode | [Reference](https://docs.bitfinex.com/reference/ws-auth-notifications) |
 | input `on` | `Client.OrderNew(ctx, orders.SubmitRequest)` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-order-new) |
@@ -196,21 +186,18 @@ that a fresh complete schema audit was performed. See [review-v1.1.0.md](review-
 | Book integrity SEQ_ALL+OB_CHECKSUM, CRC32 top-25, resync | `websocket` | checksum + gap tests |
 | Backpressure: no silent drop | `websocket` | ErrConsumerTooSlow test |
 
-## Notes & honest limitations
+## Operational limits
 
-- Raw `any` results, exposed wire-decoder helpers and untyped notification payloads
-  are inherited from v1.0.0. They do not meet the original fully typed API goal.
-  Removing or changing their signatures needs a future major version; additive
-  typed replacements are planned for v1.2.0.
-- A complete endpoint-specific schema/retention audit, persistent/shared rate
-  limiting, cross-client nonce coordination, and duplicate-safe history iterators
-  remain deferred to v1.2.0. History methods fetch one page only.
-- Default throttling and WebSocket connection pacing are per client/process;
-  applications sharing an API key or IP must coordinate their own aggregate use.
-- Integrity checking applies to trading books. Funding-book checksum semantics
-  are not verified. Raw R0 funding levels use `BookLevel.RawFunding`.
-- Account streams `bu`/`miu`/`fiu`, status, and uncommon tags retain raw data.
-- Rejected write notifications are returned as data: check `Success()` and the
-  notification status as well as the Go error.
-- Real-API public contract smoke and protected read-only integration workflows
-  are not supplied by this release; normal CI makes no Bitfinex requests.
+- Legacy raw methods and notification payloads remain for source compatibility;
+  prefer the typed replacements above. Self-defined settings and opaque bank
+  metadata use immutable exact `JSONValue` values.
+- One-page history methods remain available; use the additive iterators for
+  traversal. Timestamp windows that cannot be exhausted at the server maximum
+  terminate with `PaginationError` instead of silently skipping observations.
+- Retention, rate limits and concurrent changes in the exchange's history still
+  apply. Defaults are per client/process; shared API-key/IP coordination uses
+  the existing injectable nonce and limiter interfaces.
+- Funding-book checksum semantics remain outside the verified trading-book
+  integrity implementation. Unknown future WS tags retain raw payloads.
+- Check both the Go error and notification/status success for writes. No live
+  private writes are performed by tests or CI.

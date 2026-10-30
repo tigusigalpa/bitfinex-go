@@ -201,7 +201,7 @@ func (s *Service) History(ctx context.Context, symbol string, q *types.HistoryQu
 		path += "/" + sym.String()
 	}
 	path += "/hist"
-	r, err := s.t.PostAuth(ctx, path, q.Body(), readBucket())
+	r, err := s.t.PostAuth(ctx, path, historyBody(q), readBucket())
 	if err != nil {
 		return nil, err
 	}
@@ -247,16 +247,17 @@ func (s *Service) Trades(ctx context.Context, symbol string, q *types.HistoryQue
 
 // OTCHistory returns POST /auth/r/orders/otc/{symbol}/hist —
 // OTC desk orders.
+// Deprecated: use OTCHistoryTyped for the documented typed contract.
 func (s *Service) OTCHistory(ctx context.Context, symbol string, q *types.HistoryQuery) (*types.Response[[]Order], error) {
-	sym, err := types.ParseSymbol(symbol)
-	if err != nil {
-		return nil, err
+	r, e := s.OTCHistoryTyped(ctx, symbol, q)
+	if e != nil {
+		return nil, e
 	}
-	r, err := s.t.PostAuth(ctx, "v2/auth/r/orders/otc/"+sym.String()+"/hist", q.Body(), readBucket())
-	if err != nil {
-		return nil, err
+	out := make([]Order, 0, len(r.Data))
+	for _, o := range r.Data {
+		out = append(out, Order{ID: o.ID, Symbol: o.Symbol, MTSCreate: o.MTSCreate, MTSUpdate: o.MTSUpdate, Amount: o.Amount, AmountOrig: o.Amount, Price: o.Price, Status: o.Status, Type: "OTC"})
 	}
-	return s.orderList(r)
+	return types.NewResponse(out, r.Meta), nil
 }
 
 // ---- shared decoders ----

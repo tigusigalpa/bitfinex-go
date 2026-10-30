@@ -40,6 +40,8 @@ jobs:
       - name: Active fuzz smoke
         run: |
           go test -run='^$' -fuzz='^FuzzWireDecoder$' -fuzztime=5s ./internal/wire
+          go test -run='^$' -fuzz='^FuzzTypedCalculations$' -fuzztime=5s ./internal/wire
+          go test -run='^$' -fuzz='^FuzzJSONValue$' -fuzztime=5s ./types
           go test -run='^$' -fuzz='^FuzzErrorEnvelope$' -fuzztime=5s ./internal/httpx
           go test -run='^$' -fuzz='^FuzzDecimal$' -fuzztime=5s ./types
           go test -run='^$' -fuzz='^FuzzWebSocketParser$' -fuzztime=5s ./websocket

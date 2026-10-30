@@ -179,10 +179,10 @@ func movementFromWire(a []any) (Movement, error) {
 	if m.Fees, err = wire.DecOr(a, 13, types.Decimal{}); err != nil {
 		return m, err
 	}
-	if m.DestinationAddress, err = wire.Str(a, 14); err != nil {
+	if m.DestinationAddress, err = wire.Str(a, 16); err != nil {
 		return m, err
 	}
-	if m.TransactionID, err = wire.Str(a, 16); err != nil {
+	if m.TransactionID, err = wire.Str(a, 20); err != nil {
 		return m, err
 	}
 	return m, nil
@@ -191,29 +191,47 @@ func movementFromWire(a []any) (Movement, error) {
 // LoginEntry is one /auth/r/logins/hist row. Only documented
 // leading fields are typed; the tail is preserved.
 type LoginEntry struct {
-	ID    int64        `json:"id"`
-	MTS   types.Millis `json:"mts"`
-	IP    string       `json:"ip"`
-	Extra []any        `json:"extra,omitempty"`
+	Info  LoginMetadata `json:"info"`
+	ID    int64         `json:"id"`
+	MTS   types.Millis  `json:"mts"`
+	IP    string        `json:"ip"`
+	Extra []any         `json:"extra,omitempty"`
 }
 
 func loginEntryFromWire(a []any) (LoginEntry, error) {
-	e := LoginEntry{}
-	if err := wire.AssertMinLength(a, 1, "login entry"); err != nil {
+	var e LoginEntry
+	if err := wire.AssertMinLength(a, 8, "login entry"); err != nil {
 		return e, err
-	}
-	e.ID = wire.IntOr(a, 0, 0)
-	if mts, _, merr := wire.Mts(a, 1); merr != nil {
-		return e, merr
-	} else {
-		e.MTS = mts
 	}
 	var err error
-	if e.IP, err = wire.Str(a, 3); err != nil {
+	e.ID, err = wire.MustInt(a, 0, "login id")
+	if err != nil {
 		return e, err
 	}
-	if len(a) > 4 {
-		e.Extra = append([]any(nil), a[4:]...)
+	n, err := wire.MustInt(a, 2, "login timestamp")
+	if err != nil {
+		return e, err
+	}
+	e.MTS = types.Millis(n)
+	e.IP, err = wire.Str(a, 4)
+	if err != nil {
+		return e, err
+	}
+	if a[7] != nil {
+		v := a[7]
+		if text, ok := v.(string); ok {
+			v, err = wire.Decode([]byte(text))
+			if err != nil {
+				return e, err
+			}
+		}
+		e.Info, err = wire.Into[LoginMetadata](v)
+		if err != nil {
+			return e, err
+		}
+	}
+	if len(a) > 5 {
+		e.Extra = append([]any(nil), a[5:]...)
 	}
 	return e, nil
 }

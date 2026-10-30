@@ -95,7 +95,7 @@ func TestRESTServiceContracts(t *testing.T) {
 		{"funding-info", "auth/r/info/funding/sym_fUSD", `["sym",["fUSD",1,2]]`, func(c *bitfinex.Client) (any, error) { return c.Funding.Info(ctx, "sym_fUSD") }},
 		{"user", "auth/r/info/user", `[42,"fixture@example.invalid","fixture",1700000000000,1,1,null,"UTC","en",""]`, func(c *bitfinex.Client) (any, error) { return c.Account.UserInfo(ctx) }},
 		{"summary", "auth/r/summary", `[]`, func(c *bitfinex.Client) (any, error) { return c.Account.Summary(ctx) }},
-		{"logins", "auth/r/logins/hist", `[[42,1700000000000,null,"192.0.2.1"]]`, func(c *bitfinex.Client) (any, error) { return c.Account.LoginHistory(ctx, nil) }},
+		{"logins", "auth/r/logins/hist", `[[42,null,1700000000000,null,"192.0.2.1",null,null,"{}"]]`, func(c *bitfinex.Client) (any, error) { return c.Account.LoginHistory(ctx, nil) }},
 		{"permissions", "auth/r/permissions", `[]`, func(c *bitfinex.Client) (any, error) { return c.Account.Permissions(ctx) }},
 		{"token", "auth/w/token", `[]`, func(c *bitfinex.Client) (any, error) {
 			return c.Account.GenerateToken(ctx, 60, []string{"orders"}, false)
@@ -121,15 +121,19 @@ func TestRESTServiceContracts(t *testing.T) {
 		{"deposit-address", "auth/w/deposit/address", notice, func(c *bitfinex.Client) (any, error) {
 			return c.Account.DepositAddress(ctx, account.DepositAddressRequest{Method: "bitcoin", Wallet: "exchange"})
 		}},
-		{"deposit-addresses", "auth/r/deposit/address/all", `[]`, func(c *bitfinex.Client) (any, error) { return c.Account.DepositAddresses(ctx) }},
-		{"invoice", "auth/w/deposit/invoice", notice, func(c *bitfinex.Client) (any, error) {
-			return c.Account.Invoice(ctx, account.InvoiceRequest{Currency: "LNX", Wallet: "exchange", Amount: d, Confirm: true})
+		{"deposit-addresses", "auth/r/deposit/address/all", `[]`, func(c *bitfinex.Client) (any, error) {
+			return c.Account.DepositAddressesTyped(ctx, account.DepositAddressesRequest{Method: "bitcoin"})
 		}},
-		{"invoice-payments", "auth/r/ext/invoice/payments", `[]`, func(c *bitfinex.Client) (any, error) { return c.Account.InvoicePayments(ctx, 10) }},
+		{"invoice", "auth/w/deposit/invoice", `["hash","lninvoice",null,null,"0.01"]`, func(c *bitfinex.Client) (any, error) {
+			return c.Account.Invoice(ctx, account.InvoiceRequest{Currency: "LNX", Wallet: "exchange", Amount: types.MustDecimal("0.01"), Confirm: true})
+		}},
+		{"invoice-payments", "auth/r/ext/invoice/payments", `{"payments":[]}`, func(c *bitfinex.Client) (any, error) {
+			return c.Account.InvoicePaymentsTyped(ctx, account.InvoiceQuery{Action: "getPaymentsByUser"})
+		}},
 		{"withdraw", "auth/w/withdraw", notice, func(c *bitfinex.Client) (any, error) {
 			return c.Account.Withdraw(ctx, account.WithdrawRequest{Method: "bitcoin", Wallet: "exchange", Address: "fixture-destination", Amount: d, Confirm: true})
 		}},
-		{"movements", "auth/r/movements/USD/hist", `[[42,"USD","US Dollar",null,null,1700000000000,1700000000001,null,null,"COMPLETED",null,null,1.23,0.01,"fixture",null,"fixture-tx"]]`, func(c *bitfinex.Client) (any, error) { return c.Account.Movements(ctx, "USD", nil) }},
+		{"movements", "auth/r/movements/USD/hist", `[[42,"USD","US Dollar",null,null,1700000000000,1700000000001,null,null,"COMPLETED",null,null,1.23,0.01,null,null,"fixture",null,null,null,"fixture-tx"]]`, func(c *bitfinex.Client) (any, error) { return c.Account.Movements(ctx, "USD", nil) }},
 		{"movement-info", "auth/r/movements/info", `[]`, func(c *bitfinex.Client) (any, error) { return c.Account.MovementInfo(ctx, 42) }},
 		{"thalex-count", "auth/r/ext/wallets/transfers/free/count", `[]`, func(c *bitfinex.Client) (any, error) { return c.Account.ThalexFreeTransferCount(ctx) }},
 	}
