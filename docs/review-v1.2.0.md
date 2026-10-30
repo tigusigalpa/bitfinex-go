@@ -55,8 +55,15 @@ New write cases enable retries before an HTTP 503 to verify a single submission.
 Pagination constructors perform no I/O. Saturated millisecond windows fail
 explicitly, including windows that cannot prove completeness at the server cap.
 
-Coverage measured with `go test -coverpkg=./... -coverprofile=... ./...`: **73.2%**
-before final release checks. The existing 55% CI gate is retained.
+Coverage measured with `go test -coverpkg=./... -coverprofile=... ./...`: **74.2%**
+on both CI toolchains. The existing 55% CI gate is retained.
+
+[Release candidate CI](https://github.com/tigusigalpa/bitfinex-go/actions/runs/41001296487)
+passed Go 1.26.10 and Go 1.27 tests, race detection, vet/build, all six active
+fuzz targets, Staticcheck v0.8.2, Govulncheck v1.9.0, Gitleaks and CodeQL.
+A separate Windows Go 1.26.4 run under severe host resource pressure passed the
+new REST/pagination suites but timed out an existing socket-writer stress test;
+the complete Linux CI runs, including that regression, passed on both versions.
 
 This does not certify live private API behavior, snapshot isolation across
 mutable exchange histories, or recovery of data outside exchange retention.
