@@ -443,8 +443,8 @@ func (c *Client) OrderCancelMulti(ctx context.Context, req orders.CancelMultiReq
 
 // OrderMulti sends the "ox_multi" input — combined ops.
 func (c *Client) OrderMulti(ctx context.Context, ops []orders.MultiOp) error {
-	if len(ops) == 0 {
-		return &types.ValidationError{Field: "ops", Message: "multi requires at least one op"}
+	if len(ops) == 0 || len(ops) > 75 {
+		return &types.ValidationError{Field: "ops", Message: "multi requires 1..75 operations"}
 	}
 	raw := make([]any, len(ops))
 	for i, op := range ops {
@@ -453,7 +453,7 @@ func (c *Client) OrderMulti(ctx context.Context, ops []orders.MultiOp) error {
 		}
 		raw[i] = []any{op.Op, op.Args}
 	}
-	return c.SendAuthInput(ctx, "ox_multi", map[string]any{"ops": raw})
+	return c.SendAuthInput(ctx, "ox_multi", raw)
 }
 
 // OfferNew sends the "fon" input — a new funding offer.
@@ -547,6 +547,7 @@ func (c *Client) sendJSONGeneration(ctx context.Context, v any, generation uint6
 	}
 	c.mu.Lock()
 	conn := c.conn
+	connectionGeneration := c.generation
 	closed := c.closed
 	usable := !authInput || (c.generation == generation && c.authenticated && c.ready && !c.paused)
 	c.mu.Unlock()
@@ -558,12 +559,30 @@ func (c *Client) sendJSONGeneration(ctx context.Context, v any, generation uint6
 	}
 	if d, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		deadline, _ := ctx.Deadline()
-		_ = d.SetWriteDeadline(deadline)
+		if err := d.SetWriteDeadline(deadline); err != nil {
+			c.failWriteConnection(conn, connectionGeneration)
+			return &types.WebSocketError{Op: "write", Message: "set deadline failed", Err: err}
+		}
 	}
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	stop := context.AfterFunc(ctx, func() { c.failWriteConnection(conn, connectionGeneration) })
 	defer stop()
 	if err := conn.WriteMessage(1 /* text */, b); err != nil {
+		c.failWriteConnection(conn, connectionGeneration)
 		return &types.WebSocketError{Op: "write", Message: "send failed", Err: err}
 	}
 	return nil
+}
+
+// A failed write is terminal for the socket. Closing it wakes the read loop,
+// which owns reset delivery and reconnect. An old writer must not invalidate a
+// newer connection, and the failed command is never replayed.
+func (c *Client) failWriteConnection(conn Conn, generation uint64) {
+	c.mu.Lock()
+	if c.generation == generation {
+		c.conn = nil
+		c.ready = false
+		c.authenticated = false
+	}
+	c.mu.Unlock()
+	_ = conn.Close()
 }

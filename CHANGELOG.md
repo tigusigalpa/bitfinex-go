@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-30
+
+### Fixed
+
+- Send the documented WebSocket `ox_multi` array payload and validate the 1..75
+  operation limit before writing a frame.
+- Invalidate and close sockets after write/deadline failures, waking reset and
+  reconnect processing. Failed commands are never replayed; stale write failures
+  cannot invalidate a newer connection generation.
+- Admit signed REST calls through the limiter after acquiring the API-key gate,
+  so queued calls observe newly applied IP cooldowns before generating a nonce.
+  Limiter failures retain their original errors, consume no nonce, release the
+  gate and never trigger retries. Retry backoff stays outside the gate.
+- Require execution symbol, timestamp, amount and price in the shared REST/WS
+  trade decoder. Preserve exact decimals, optional fees and unknown trailing fields.
+- Add `UpdateRequest.Leverage` (`lev`, 1..100) for REST and WS derivative updates,
+  with local range validation and unchanged omission for existing spot updates.
+
+### Verification
+
+- Add exact-frame/body, write-failure/reconnect/no-replay, stale-generation,
+  queued-cooldown, limiter-cleanup, strict-decoder and leverage regression tests.
+- Document the five corrections and migration details in docs/upgrade-v1.2.2.md.
+
 ## [1.2.1] - 2026-10-30
 
 ### Fixed

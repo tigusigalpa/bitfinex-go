@@ -10,16 +10,17 @@ Unofficial Go client library for the **Bitfinex API v2** (REST + WebSocket).
 - API coverage and status per endpoint: [docs/endpoint-coverage.md](docs/endpoint-coverage.md)
 - Only **API v2** is supported. REST v1 is intentionally excluded.
 
-The v1.2.1 release orders signed REST/WebSocket exchanges per API key, explicitly
-invalidates state on disconnect, accepts nullable liquidation prices, and rejects
-malformed entity IDs. See the [upgrade notes](docs/upgrade-v1.2.1.md).
+The v1.2.2 release corrects WebSocket multi-op frames, recovers from failed socket
+writes, closes the queued-request cooldown gap, validates required execution
+fields, and supports leverage in derivative order updates through REST and WS.
+See the [upgrade notes](docs/upgrade-v1.2.2.md).
 Typed contracts, derivative collateral management and lazy history iterators from
 v1.2.0 remain available; see the [pagination guide](docs/pagination.md).
 
 ## Install
 
 ```bash
-go get github.com/tigusigalpa/bitfinex-go@v1.2.1
+go get github.com/tigusigalpa/bitfinex-go@v1.2.2
 ```
 
 ## Quickstart — public, read-only
@@ -91,6 +92,10 @@ one provider instance. Clients sharing a key within a process must also share
 that instance via `WithNonceProvider`. Signed REST attempts and WebSocket auth
 handshakes on the same key are serialized through response/acknowledgement;
 public calls and other keys continue independently. Queue waits honor cancellation.
+Signed REST calls check rate admission after acquiring the key gate, so requests
+queued behind a rate-limit response observe its new cooldown before signing.
+An endpoint rate wait holds that key's gate; use context deadlines to bound the
+complete operation, including queue time.
 This does **not** coordinate across processes, machines or restarts. Prefer
 **separate API keys per independent client**. Sharing a key across replicas
 requires persistent nonce allocation **and** external ordering of complete signed
@@ -165,6 +170,9 @@ if err := sub.Err(); err != nil { /* handle terminal subscription failure */ }
   current connection. Invalidate caches on reset, wait for fresh snapshots, and
   reconcile account history through REST. Books reject deltas/checksums before a
   fresh snapshot; queued authenticated inputs cannot cross connection generations.
+- Failed socket writes immediately clear readiness and close the failed socket,
+  triggering the same reset/reconnect path. An error from an old writer cannot
+  invalidate a newer connection. The failed command is never automatically replayed.
 - `BackpressurePolicy`: the default `BackpressureStop` emits terminal
   `ErrConsumerTooSlow`, invalidates buffered data and closes a lagging subscription;
   a queued event may be replaced by the terminal error. `Subscription.Err()` also

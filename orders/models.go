@@ -187,21 +187,24 @@ func TradeExecutionFromWire(a []any) (TradeExecution, error) {
 	if t.ID, err = wire.RequiredID(a, 0); err != nil {
 		return t, err
 	}
-	if t.Pair, err = wire.Str(a, 1); err != nil {
+	if t.Pair, err = wire.RequiredString(a, 1); err != nil {
 		return t, err
 	}
-	if mts, _, merr := wire.Mts(a, 2); merr != nil {
-		return t, merr
-	} else {
-		t.MTSCreate = mts
+	mts, err := wire.MustInt(a, 2, "trade execution timestamp")
+	if err != nil {
+		return t, err
 	}
+	if mts < 0 {
+		return t, &types.ProtocolError{Message: "negative trade execution timestamp"}
+	}
+	t.MTSCreate = types.Millis(mts)
 	if t.OrderID, err = wire.RequiredID(a, 3); err != nil {
 		return t, err
 	}
-	if t.ExecAmount, err = wire.DecOr(a, 4, types.Decimal{}); err != nil {
+	if t.ExecAmount, err = wire.RequiredDecimal(a, 4); err != nil {
 		return t, err
 	}
-	if t.ExecPrice, err = wire.DecOr(a, 5, types.Decimal{}); err != nil {
+	if t.ExecPrice, err = wire.RequiredDecimal(a, 5); err != nil {
 		return t, err
 	}
 	if t.OrderType, err = wire.Str(a, 6); err != nil {

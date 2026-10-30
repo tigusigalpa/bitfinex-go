@@ -26,7 +26,7 @@ const (
 	DefaultPrivateRESTBase = "https://api.bitfinex.com/v2"
 	DefaultPublicWSURL     = "wss://api-pub.bitfinex.com/ws/2"
 	DefaultPrivateWSURL    = "wss://api.bitfinex.com/ws/2"
-	DefaultUserAgent       = "bitfinex-go/1.2.1 (+https://github.com/tigusigalpa/bitfinex-go)"
+	DefaultUserAgent       = "bitfinex-go/1.2.2 (+https://github.com/tigusigalpa/bitfinex-go)"
 )
 
 // HTTPDoer is the narrow transport dependency — *http.Client

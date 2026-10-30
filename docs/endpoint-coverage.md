@@ -1,6 +1,12 @@
 # Endpoint coverage — Bitfinex API v2
 
-Version: **v1.2.1**. Review date: **2026-10-30**.
+Version: **v1.2.2**. Review date: **2026-10-30**.
+
+The [v1.2.2 upgrade notes](upgrade-v1.2.2.md) cover multi-op frames, socket write
+recovery, queued cooldown admission, required execution fields and derivative
+update leverage. Regression evidence: `regressions_v122_test.go`,
+`orders/execution_v122_test.go`, `internal/httpx/cooldown_v122_test.go`, and
+`websocket/regressions_v122_test.go`.
 
 Patch hardening: [v1.2.1 upgrade notes](upgrade-v1.2.1.md) describe per-key signed
 exchange ordering, disconnect resets, nullable liquidation prices and strict IDs.
@@ -65,7 +71,7 @@ and [pagination](pagination.md) for precise scope and limits.
 | `POST /auth/r/wallets` | `Wallets.All(ctx)` | — | `[]wallets.Wallet` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-wallets) |
 | `POST /auth/r/orders[/{sym}]` | `Orders.Active(ctx, sym)` | optional symbol | `[]Order` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-retrieve-orders) |
 | `POST /auth/w/order/submit` | `Orders.Submit(ctx, SubmitRequest)` | typed | `WriteResult` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-submit-order) |
-| `POST /auth/w/order/update` | `Orders.Update(ctx, UpdateRequest)` | typed | `WriteResult` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-update-order) |
+| `POST /auth/w/order/update` | `Orders.Update(ctx, UpdateRequest)` | typed, including `Leverage` | `WriteResult` | implemented | exact `lev` body + HTTP 503 (`regressions_v122_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-update-order) |
 | `POST /auth/w/order/cancel` | `Orders.Cancel(ctx, CancelRequest)` | id or cid | `WriteResult` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-cancel-order) |
 | `POST /auth/w/order/cancel/multi` | `Orders.CancelMulti(ctx, CancelMultiRequest)` | ids/cids/gids/all | `WriteResult` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-cancel-orders-multiple) |
 | `POST /auth/w/order/multi` | `Orders.Multi(ctx, []MultiOp)` | ops | `WriteResult` | implemented | synthetic success + HTTP 503 (`client_test.go`) | [Reference](https://docs.bitfinex.com/reference/rest-auth-order-multi) |
@@ -171,7 +177,7 @@ and [pagination](pagination.md) for precise scope and limits.
 | input `ou` | `Client.OrderUpdate(ctx, orders.UpdateRequest)` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-order-update) |
 | input `oc` | `Client.OrderCancel(ctx, orders.CancelRequest)` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-order-cancel) |
 | input `oc_multi` | `Client.OrderCancelMulti(ctx, orders.CancelMultiRequest)` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-order-cancel-multi) |
-| input `ox_multi` | `Client.OrderMulti(ctx, []orders.MultiOp)` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-order-multi-op) |
+| input `ox_multi` | `Client.OrderMulti(ctx, []orders.MultiOp)` | array, 1..75 operations | implemented | exact frame + bounds (`websocket/regressions_v122_test.go`) | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-order-multi-op) |
 | input `fon` | `Client.OfferNew(ctx, funding.OfferRequest)` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-offer-new) |
 | input `foc` | `Client.OfferCancel(ctx, offerID)` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-offer-cancel) |
 | input `calc` | `Client.Calc(ctx, []string{…})` | typed input | implemented | validation | [Reference](https://docs.bitfinex.com/reference/ws-auth-input-calc) |

@@ -200,9 +200,8 @@ func (t *Transport) PostAuth(ctx context.Context, apiPath string, body any, rc R
 	}, apiPath, rc)
 }
 
-// send runs the attempt loop: limiter wait → build request
-// (signing happens inside build for signed calls) → do →
-// classify → maybe retry with bounded jittered backoff.
+// send runs the attempt loop: key gate → limiter wait → build/sign → do →
+// classify → maybe retry with bounded jittered backoff outside the gate.
 func (t *Transport) send(ctx context.Context, build func(ctx context.Context) (*http.Request, error), endpoint string, rc RequestContext) (*Result, error) {
 	startedAt := time.Now()
 	if rc.Idempotent && t.cfg.Retry.MaxElapsed > 0 {
@@ -216,17 +215,11 @@ func (t *Transport) send(ctx context.Context, build func(ctx context.Context) (*
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if rc.Bucket != "" && t.cfg.Limiter != nil {
-			if err := t.cfg.Limiter.Wait(ctx, rc.Bucket); err != nil {
-				return nil, err
-			}
-		}
-
 		res, err := t.attempt(ctx, build, endpoint, rc, attempt)
 		if res != nil {
 			return res, nil
 		}
-		var construction *requestBuildError
+		var construction *requestPreparationError
 		if errors.As(err, &construction) {
 			return nil, construction.err
 		}
@@ -258,13 +251,15 @@ func (t *Transport) send(ctx context.Context, build func(ctx context.Context) (*
 	}
 }
 
-type requestBuildError struct{ err error }
+type requestPreparationError struct{ err error }
 
-func (e *requestBuildError) Error() string { return "request construction failed" }
-func (e *requestBuildError) Unwrap() error { return e.err }
+func (e *requestPreparationError) Error() string { return "request preparation failed" }
+func (e *requestPreparationError) Unwrap() error { return e.err }
 
-// attempt holds the per-key gate from nonce generation until response handling.
-// Rate-limit waits and retry backoff remain outside the gate. Public calls bypass it.
+// attempt holds the per-key gate through limiter admission, nonce generation and
+// response handling. Waiting requests therefore observe penalties applied by
+// earlier exchanges before generating a nonce or reaching the network. Public
+// calls bypass the key gate; retry backoff remains outside it.
 func (t *Transport) attempt(ctx context.Context, build func(context.Context) (*http.Request, error), endpoint string, rc RequestContext, attempt int) (*Result, error) {
 	if rc.authKey != "" {
 		release, err := authflow.Acquire(ctx, rc.authKey)
@@ -273,11 +268,21 @@ func (t *Transport) attempt(ctx context.Context, build func(context.Context) (*h
 		}
 		defer release()
 	}
+	if rc.Bucket != "" && t.cfg.Limiter != nil {
+		if err := t.cfg.Limiter.Wait(ctx, rc.Bucket); err != nil {
+			// No request was sent. Preserve the caller's limiter error without
+			// treating even a custom transport-shaped error as a retryable send.
+			return nil, &requestPreparationError{err: err}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, &requestPreparationError{err: err}
+	}
 	var lastErr error
 	req, err := build(ctx)
 	if err != nil {
 		// Signing/nonce/validation failures are never retried.
-		return nil, &requestBuildError{err: err}
+		return nil, &requestPreparationError{err: err}
 	}
 	req = req.WithContext(ctx)
 	if t.cfg.UserAgent != "" {

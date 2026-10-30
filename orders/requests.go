@@ -159,8 +159,8 @@ func (r SubmitRequest) Body() map[string]any {
 	return body
 }
 
-// UpdateRequest is POST /auth/w/order/update. Only Id is
-// required; every other field is an optional patch.
+// UpdateRequest is POST /auth/w/order/update. ID is required. Derivative order
+// updates also require Leverage (1..100); the symbol cannot be inferred from ID.
 type UpdateRequest struct {
 	ID            int64 // required
 	Amount        *types.Decimal
@@ -168,6 +168,7 @@ type UpdateRequest struct {
 	CID           *ClientOrderID
 	GID           *int64
 	Flags         *int64
+	Leverage      *int64 // "lev" — required for derivative order updates
 	Delta         *types.Decimal
 	PriceAuxLimit *types.Decimal
 	PriceTrailing *types.Decimal
@@ -178,6 +179,9 @@ type UpdateRequest struct {
 func (r UpdateRequest) Validate() error {
 	if r.ID <= 0 {
 		return &types.ValidationError{Field: "id", Message: "order id must be positive"}
+	}
+	if r.Leverage != nil && (*r.Leverage < 1 || *r.Leverage > 100) {
+		return &types.ValidationError{Field: "lev", Message: "derivative leverage must be 1..100"}
 	}
 	if r.Amount != nil && r.Delta != nil {
 		return &types.ValidationError{Field: "amount", Message: "amount and delta are mutually exclusive"}
@@ -198,6 +202,9 @@ func (r UpdateRequest) Validate() error {
 // Body renders the request body.
 func (r UpdateRequest) Body() map[string]any {
 	body := map[string]any{"id": r.ID}
+	if r.Leverage != nil {
+		body["lev"] = *r.Leverage
+	}
 	if r.Amount != nil {
 		body["amount"] = r.Amount.CanonicalString()
 	}
