@@ -10,15 +10,16 @@ Unofficial Go client library for the **Bitfinex API v2** (REST + WebSocket).
 - API coverage and status per endpoint: [docs/endpoint-coverage.md](docs/endpoint-coverage.md)
 - Only **API v2** is supported. REST v1 is intentionally excluded.
 
-The v1.2.0 release adds typed contracts for the previously deferred endpoints,
-correct derivative collateral management, and lazy history iterators.
-See the [review](docs/review-v1.2.0.md), [upgrade notes](docs/upgrade-v1.2.0.md)
-and [pagination guide](docs/pagination.md). Legacy signatures remain available.
+The v1.2.1 release orders signed REST/WebSocket exchanges per API key, explicitly
+invalidates state on disconnect, accepts nullable liquidation prices, and rejects
+malformed entity IDs. See the [upgrade notes](docs/upgrade-v1.2.1.md).
+Typed contracts, derivative collateral management and lazy history iterators from
+v1.2.0 remain available; see the [pagination guide](docs/pagination.md).
 
 ## Install
 
 ```bash
-go get github.com/tigusigalpa/bitfinex-go@v1.2.0
+go get github.com/tigusigalpa/bitfinex-go@v1.2.1
 ```
 
 ## Quickstart — public, read-only
@@ -85,11 +86,15 @@ total := price.Mul(amount) // exact, no float rounding
 ## Nonce / multi-process warning
 
 Bitfinex requires a **strictly increasing nonce per API key**. The default
-`MillisecondNonceProvider` is process-local and concurrency-safe
-(`max(nowMillis, last+1)`), but it does **not** coordinate across processes, machines or
-restarts. If you run multiple services or replicas on one key, inject a
-persistent/distributed `NonceProvider` via `WithNonceProvider` — or, as the official docs
-recommend, issue **separate API keys per independent client**.
+`MillisecondNonceProvider` is concurrency-safe (`max(nowMillis, last+1)`) within
+one provider instance. Clients sharing a key within a process must also share
+that instance via `WithNonceProvider`. Signed REST attempts and WebSocket auth
+handshakes on the same key are serialized through response/acknowledgement;
+public calls and other keys continue independently. Queue waits honor cancellation.
+This does **not** coordinate across processes, machines or restarts. Prefer
+**separate API keys per independent client**. Sharing a key across replicas
+requires persistent nonce allocation **and** external ordering of complete signed
+exchanges: a distributed counter alone cannot prevent reversed network delivery.
 
 ## Cancellation and timeouts
 
@@ -147,13 +152,19 @@ if err := sub.Err(); err != nil { /* handle terminal subscription failure */ }
   `ws/wu`, `bu`, `miu`, `fiu`, `fte/ftu`, `n`) arrive as typed `AuthEvent`s; typed inputs
   `on/ou/oc/oc_multi/ox_multi/fon/foc/calc` are provided.
 - Integrity mode (for trading books): `FlagSeqAll` (65536) + `FlagChecksum` (131072)
-  give sequence-gap detection and CRC32 top-25 book validation; gaps/mismatches trigger an
+  give sequence-gap detection and CRC32 top-25 book validation; gaps/mismatches trigger
   a connection reset and fresh snapshots for all tracked channels. Discard local
   derived state after integrity errors and rebuild it from the new snapshots.
   Funding-book checksum semantics remain unverified.
 - Reconnects use capped full-jitter backoff with a three-second minimum between
   connection attempts per client, fresh-nonce authentication, and subscription ack
   tracking. Multiple clients require application-level connection pacing.
+- Disconnects emit `KindReset` immediately before reconnect backoff, both on
+  `Lifecycle()` and every active subscription (including account channel zero).
+  Old queued events are discarded. `Event.Generation` identifies the lost or
+  current connection. Invalidate caches on reset, wait for fresh snapshots, and
+  reconcile account history through REST. Books reject deltas/checksums before a
+  fresh snapshot; queued authenticated inputs cannot cross connection generations.
 - `BackpressurePolicy`: the default `BackpressureStop` emits terminal
   `ErrConsumerTooSlow`, invalidates buffered data and closes a lagging subscription;
   a queued event may be replaced by the terminal error. `Subscription.Err()` also

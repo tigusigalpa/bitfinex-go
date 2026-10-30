@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-30
+
+### Fixed
+
+- Serialize nonce generation and complete signed REST/WS auth exchanges per API
+  key within the process. Queued cancellation consumes no nonce; response bodies,
+  auth acknowledgements and failure cleanup remain inside the gate.
+- Emit `KindReset` before reconnect backoff on lifecycle and subscription streams,
+  replacing stale buffered events, clearing books and exposing `Event.Generation`.
+  Require fresh book snapshots before deltas/checksums; reject queued auth inputs
+  if the connection generation, authentication or maintenance state changed.
+- Accept null `Liquidation.PriceAcquired` in REST, history iterators and WebSocket
+  status events, preserving the distinction between absence and a real zero.
+- Reject malformed/missing/non-positive primary IDs in orders, executions,
+  funding offers/credits/loans/trades, public trades and account profiles/ledgers/
+  movements. Optional related IDs preserve integer type errors instead of defaulting.
+
+### Verification
+
+- Add regressions for exchange ordering in both REST/WS directions, cancellation,
+  failure cleanup, full-buffer disconnects, reconnect generations, initial book
+  integrity, stale queued writes, nullable liquidation prices and exact integer IDs.
+- Document application reset handling and the remaining cross-process nonce,
+  reconciliation and ambiguous-write boundaries in docs/upgrade-v1.2.1.md.
+
 ## [1.2.0] - 2026-10-30
 
 ### Added

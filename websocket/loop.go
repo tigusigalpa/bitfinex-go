@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tigusigalpa/bitfinex-go/auth"
+	"github.com/tigusigalpa/bitfinex-go/internal/authflow"
 
 	"github.com/tigusigalpa/bitfinex-go/internal/wire"
 
@@ -46,6 +47,9 @@ func (c *Client) readLoop(url string, flags int, authOpts *AuthOptions, ready ch
 		c.mu.Unlock()
 		if stopped {
 			return
+		}
+		if everReady {
+			c.invalidateConnection(err)
 		}
 
 		// Reconnect with capped full-jitter backoff.
@@ -94,6 +98,7 @@ func (c *Client) runConn(url string, flags int, authOpts *AuthOptions, first boo
 		return report(types.ErrClosed)
 	}
 	c.conn = conn
+	c.generation++
 	c.seqInit = false
 	c.paused = false
 	c.mu.Unlock()
@@ -112,11 +117,7 @@ func (c *Client) runConn(url string, flags int, authOpts *AuthOptions, first boo
 
 	// 2) auth handshake — fresh nonce on EVERY (re)connect.
 	if authOpts != nil {
-		if err := c.sendAuth(authOpts); err != nil {
-			conn.Close()
-			return report(err)
-		}
-		if err := c.awaitAuthOK(conn); err != nil {
+		if err := c.authenticate(ctx, conn, authOpts); err != nil {
 			conn.Close()
 			return report(err)
 		}
@@ -226,9 +227,22 @@ func (c *Client) handleInfoHandshake(msg any) error {
 	return nil
 }
 
+// authenticate orders this handshake with REST and other WS auth on the key.
+func (c *Client) authenticate(ctx context.Context, conn Conn, opts *AuthOptions) error {
+	release, err := authflow.Acquire(ctx, c.cfg.Signer.Key())
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err = c.sendAuth(ctx, opts); err != nil {
+		return err
+	}
+	return c.awaitAuthOK(conn)
+}
+
 // sendAuth emits the signed auth frame with a fresh nonce.
-func (c *Client) sendAuth(opts *AuthOptions) error {
-	nonce, err := c.cfg.NonceProvider.Next(c.ctx)
+func (c *Client) sendAuth(ctx context.Context, opts *AuthOptions) error {
+	nonce, err := c.cfg.NonceProvider.Next(ctx)
 	if err != nil {
 		return &types.NonceError{Message: "nonce provider failed for ws auth", Err: err}
 	}
@@ -248,7 +262,7 @@ func (c *Client) sendAuth(opts *AuthOptions) error {
 	if opts.DeadManSwitch {
 		msg["dms"] = 4
 	}
-	return c.sendJSON(msg)
+	return c.sendJSONContext(ctx, msg)
 }
 
 // awaitAuthOK reads frames until the auth ack arrives.
@@ -586,6 +600,11 @@ func (c *Client) handleChecksum(chanID int64, rawCS any) {
 	if book == nil {
 		return
 	}
+	if !book.hasSnapshot {
+		c.deliverError(chanID, &types.ProtocolError{Message: "book checksum arrived before a fresh snapshot"})
+		c.resyncChannel(chanID)
+		return
+	}
 	if book.verify(server, raw) {
 		c.deliver(chanID, Event{Kind: KindChecksum, ChanID: chanID})
 		return
@@ -667,6 +686,23 @@ func (c *Client) routePendingError(err error) {
 // channel (non-blocking; advisory events may coalesce under
 // pressure — subscription data is never dropped this way).
 func (c *Client) emitLifecycle(ev Event) {
+	if ev.Generation == 0 {
+		c.mu.Lock()
+		ev.Generation = c.generation
+		c.mu.Unlock()
+	}
+	if ev.Kind == KindReset {
+		// Connection state replaces older advisory state. The read loop owns
+		// lifecycle closure, so this never sends concurrently with close.
+		for {
+			select {
+			case <-c.lifeCh:
+				continue
+			default:
+			}
+			break
+		}
+	}
 	select {
 	case c.lifeCh <- ev:
 	default:
@@ -692,6 +728,9 @@ func (c *Client) deliverError(chanID int64, err error) {
 // never silently dropped. The wg protocol prevents
 // send-on-closed panics.
 func (c *Client) deliverTo(sub *Subscription, ev Event) {
+	c.mu.Lock()
+	ev.Generation = c.generation
+	c.mu.Unlock()
 	stop := sub.deliveryDone()
 	sub.mu.Lock()
 	slow := false
@@ -736,6 +775,53 @@ func (c *Client) deliverTo(sub *Subscription, ev Event) {
 		slow = true
 		close(sub.events)
 	}
+}
+
+// invalidateConnection runs before reconnect/backoff. It cannot block on a
+// full event buffer: old-generation events are replaced by an explicit reset.
+func (c *Client) invalidateConnection(cause error) {
+	c.mu.Lock()
+	c.ready = false
+	c.authenticated = false
+	c.books = map[int64]*bookIntegrity{}
+	generation := c.generation
+	seen := map[*Subscription]bool{}
+	for _, s := range c.subs {
+		seen[s] = true
+	}
+	for _, p := range c.pending {
+		if p.sub != nil {
+			seen[p.sub] = true
+		}
+	}
+	c.mu.Unlock()
+	if cause == nil {
+		cause = &types.WebSocketError{Op: "read", Message: "connection closed"}
+	}
+	ev := Event{Kind: KindReset, Action: "disconnected", Generation: generation, Err: cause}
+	for s := range seen {
+		s.mu.Lock()
+		if !s.closed {
+			for {
+				select {
+				case <-s.events:
+					continue
+				default:
+				}
+				break
+			}
+			reset := ev
+			reset.ChanID = s.chanID
+			reset.Channel = s.req.Channel
+			reset.Symbol = s.req.Symbol
+			select {
+			case s.events <- reset:
+			default:
+			}
+		}
+		s.mu.Unlock()
+	}
+	c.emitLifecycle(ev)
 }
 
 // reconnectDelay returns full-jitter backoff:

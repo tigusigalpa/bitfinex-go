@@ -81,7 +81,9 @@ func FromWire(a []any) (Position, error) {
 	if p.Leverage, err = wire.DecOr(a, 9, types.Decimal{}); err != nil {
 		return p, err
 	}
-	p.ID = wire.IntOr(a, 12, 0)
+	if p.ID, err = wire.OptionalInt(a, 12); err != nil {
+		return p, err
+	}
 	if mts, _, merr := wire.Mts(a, 13); merr != nil {
 		return p, merr
 	} else {

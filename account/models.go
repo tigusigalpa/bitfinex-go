@@ -33,7 +33,9 @@ func userInfoFromWire(a []any) (UserInfo, error) {
 		return u, err
 	}
 	var err error
-	u.ID = wire.IntOr(a, 0, 0)
+	if u.ID, err = wire.RequiredID(a, 0); err != nil {
+		return u, err
+	}
 	if u.Email, err = wire.Str(a, 1); err != nil {
 		return u, err
 	}
@@ -77,7 +79,9 @@ func ledgerEntryFromWire(a []any) (LedgerEntry, error) {
 		return e, err
 	}
 	var err error
-	e.ID = wire.IntOr(a, 0, 0)
+	if e.ID, err = wire.RequiredID(a, 0); err != nil {
+		return e, err
+	}
 	if e.Currency, err = wire.Str(a, 1); err != nil {
 		return e, err
 	}
@@ -153,7 +157,9 @@ func movementFromWire(a []any) (Movement, error) {
 		return m, err
 	}
 	var err error
-	m.ID = wire.IntOr(a, 0, 0)
+	if m.ID, err = wire.RequiredID(a, 0); err != nil {
+		return m, err
+	}
 	if m.Currency, err = wire.Str(a, 1); err != nil {
 		return m, err
 	}

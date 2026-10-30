@@ -100,6 +100,7 @@ type Client struct {
 	started       bool
 	ready         bool
 	everReady     bool
+	generation    uint64
 	authenticated bool
 	done          chan struct{}
 	cancel        context.CancelFunc
@@ -162,8 +163,9 @@ func New(cfg Config) (*Client, error) {
 }
 
 // Lifecycle yields connection-level advisory events (info,
-// errors that reach no subscription, pong). Advisory only —
-// subscription delivery is governed by the BackpressurePolicy.
+// errors that reach no subscription, pong). Most events are advisory. A
+// KindReset replaces buffered lifecycle events so the latest invalidation is
+// retained even for a slow consumer; it is also sent to every active subscription.
 func (c *Client) Lifecycle() <-chan Event { return c.lifeCh }
 
 // ConnectPublic opens the public endpoint and optionally sends
@@ -394,7 +396,7 @@ func (c *Client) SendAuthInput(ctx context.Context, stream string, payload any) 
 		return err
 	}
 	c.mu.Lock()
-	authed, paused := c.authenticated, c.paused
+	authed, paused, generation := c.authenticated && c.ready, c.paused, c.generation
 	c.mu.Unlock()
 	if !authed {
 		return &types.WebSocketError{Op: "write", Message: "auth inputs require ConnectAuth"}
@@ -402,7 +404,7 @@ func (c *Client) SendAuthInput(ctx context.Context, stream string, payload any) 
 	if paused {
 		return &types.WebSocketError{Op: "write", Message: "server is in maintenance"}
 	}
-	return c.sendJSONContext(ctx, []any{0, stream, nil, payload})
+	return c.sendJSONGeneration(ctx, []any{0, stream, nil, payload}, generation, true)
 }
 
 // OrderNew sends the "on" input — a new order. Reuses
@@ -523,6 +525,10 @@ func (c *Client) sendJSON(v any) error {
 }
 
 func (c *Client) sendJSONContext(ctx context.Context, v any) error {
+	return c.sendJSONGeneration(ctx, v, 0, false)
+}
+
+func (c *Client) sendJSONGeneration(ctx context.Context, v any, generation uint64, authInput bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	c.writeOnce.Do(func() { c.writeGate = make(chan struct{}, 1) })
@@ -542,9 +548,13 @@ func (c *Client) sendJSONContext(ctx context.Context, v any) error {
 	c.mu.Lock()
 	conn := c.conn
 	closed := c.closed
+	usable := !authInput || (c.generation == generation && c.authenticated && c.ready && !c.paused)
 	c.mu.Unlock()
 	if closed || conn == nil {
 		return types.ErrClosed
+	}
+	if !usable {
+		return &types.WebSocketError{Op: "write", Message: "connection state changed before authenticated send"}
 	}
 	if d, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
 		deadline, _ := ctx.Deadline()

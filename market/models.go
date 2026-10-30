@@ -272,7 +272,9 @@ func tradeFromWire(a []any, sym types.Symbol) (Trade, error) {
 		if err = wire.AssertMinLength(a, 5, "funding trade"); err != nil {
 			return t, err
 		}
-		t.ID = wire.IntOr(a, 0, 0)
+		if t.ID, err = wire.RequiredID(a, 0); err != nil {
+			return t, err
+		}
 		if mts, _, merr := wire.Mts(a, 1); merr != nil {
 			return t, merr
 		} else {
@@ -290,7 +292,9 @@ func tradeFromWire(a []any, sym types.Symbol) (Trade, error) {
 	if err = wire.AssertMinLength(a, 4, "trade"); err != nil {
 		return t, err
 	}
-	t.ID = wire.IntOr(a, 0, 0)
+	if t.ID, err = wire.RequiredID(a, 0); err != nil {
+		return t, err
+	}
 	if mts, _, merr := wire.Mts(a, 1); merr != nil {
 		return t, merr
 	} else {
@@ -473,11 +477,17 @@ func liquidationFromWire(a []any) (Liquidation, error) {
 	for _, x := range []struct {
 		p *types.Decimal
 		i int
-	}{{&l.Amount, 5}, {&l.BasePrice, 6}, {&l.PriceAcquired, 11}} {
+	}{{&l.Amount, 5}, {&l.BasePrice, 6}} {
 		*x.p, e = wire.RequiredDecimal(a, x.i)
 		if e != nil {
 			return l, e
 		}
+	}
+	// Initial liquidation events have no acquisition price yet. Preserve null
+	// as an absent Decimal; a real zero remains a valid zero value.
+	l.PriceAcquired, _, e = wire.Decimal(a, 11)
+	if e != nil {
+		return l, e
 	}
 	l.IsMatch, e = wire.MustInt(a, 8, "liquidation match")
 	if e != nil {

@@ -37,13 +37,12 @@ func (SystemClock) Now() time.Time { return time.Now() }
 //
 //	next = max(nowMillis, last+1)
 //
-// It satisfies single-process monotonicity under concurrency,
-// but it does NOT coordinate across processes, machines, or
-// restarts. If you run multiple services or horizontal replicas
-// on one API key, inject a persistent/distributed NonceProvider
-// (e.g. backed by a DB sequence or Redis INCR) — or, as the
-// official docs recommend, issue a separate API key per
-// independent client.
+// It satisfies monotonicity among callers sharing this instance. SDK clients
+// sharing one API key in a process must share the provider instance as well.
+// REST and WS auth exchanges are ordered per key within the process. Across
+// processes, machines, or restarts, use separate keys for independent clients,
+// or coordinate both persistent nonce allocation AND complete signed exchanges
+// externally. A distributed counter alone cannot order network delivery.
 type MillisecondNonceProvider struct {
 	clock Clock
 

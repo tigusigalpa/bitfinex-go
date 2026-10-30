@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/tigusigalpa/bitfinex-go/auth"
+	"github.com/tigusigalpa/bitfinex-go/internal/authflow"
 	"github.com/tigusigalpa/bitfinex-go/internal/retry"
 	"github.com/tigusigalpa/bitfinex-go/internal/wire"
 	"github.com/tigusigalpa/bitfinex-go/types"
@@ -44,6 +45,7 @@ type Limiter interface {
 
 // RequestContext carries per-call routing metadata.
 type RequestContext struct {
+	authKey    string // non-empty only for signed requests; never logged
 	Bucket     string // rate-limit bucket name
 	Idempotent bool   // safe to retry after transient failure
 }
@@ -155,6 +157,7 @@ func (t *Transport) PostAuth(ctx context.Context, apiPath string, body any, rc R
 	if t.cfg.Signer == nil || t.cfg.NonceProvider == nil {
 		return nil, types.ErrCredentialsMissing
 	}
+	rc.authKey = t.cfg.Signer.Key()
 	base := strings.TrimRight(t.cfg.PrivateBase, "/")
 
 	var rawBody []byte
@@ -219,41 +222,15 @@ func (t *Transport) send(ctx context.Context, build func(ctx context.Context) (*
 			}
 		}
 
-		req, err := build(ctx)
-		if err != nil {
-			// Signing/nonce/validation failures are never retried.
-			return nil, err
+		res, err := t.attempt(ctx, build, endpoint, rc, attempt)
+		if res != nil {
+			return res, nil
 		}
-		req = req.WithContext(ctx)
-		if t.cfg.UserAgent != "" {
-			req.Header.Set("User-Agent", t.cfg.UserAgent)
+		var construction *requestBuildError
+		if errors.As(err, &construction) {
+			return nil, construction.err
 		}
-
-		resp, err := t.cfg.Doer.Do(req)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
-			}
-			lastErr = &types.TransportError{Op: req.Method, Endpoint: endpoint, Err: err}
-		} else if resp == nil || resp.Body == nil {
-			return nil, &types.ProtocolError{Message: "HTTP transport returned no response body"}
-		} else {
-			const maxResponseBytes = 4 << 20
-			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-			resp.Body.Close()
-			if len(raw) > maxResponseBytes {
-				return nil, &types.ProtocolError{Message: "HTTP response exceeded 4 MiB limit"}
-			}
-			if readErr != nil {
-				lastErr = &types.TransportError{Op: "read", Endpoint: endpoint, Err: readErr}
-			} else {
-				var res *Result
-				res, lastErr = t.classify(resp, raw, endpoint, attempt, rc)
-				if res != nil {
-					return res, nil
-				}
-			}
-		}
+		lastErr = err
 
 		if attempt >= t.cfg.Retry.MaxAttempts ||
 			!t.cfg.Retry.Retryable(lastErr, rc.Idempotent) ||
@@ -279,6 +256,61 @@ func (t *Transport) send(ctx context.Context, build func(ctx context.Context) (*
 		case <-timer.C:
 		}
 	}
+}
+
+type requestBuildError struct{ err error }
+
+func (e *requestBuildError) Error() string { return "request construction failed" }
+func (e *requestBuildError) Unwrap() error { return e.err }
+
+// attempt holds the per-key gate from nonce generation until response handling.
+// Rate-limit waits and retry backoff remain outside the gate. Public calls bypass it.
+func (t *Transport) attempt(ctx context.Context, build func(context.Context) (*http.Request, error), endpoint string, rc RequestContext, attempt int) (*Result, error) {
+	if rc.authKey != "" {
+		release, err := authflow.Acquire(ctx, rc.authKey)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
+	var lastErr error
+	req, err := build(ctx)
+	if err != nil {
+		// Signing/nonce/validation failures are never retried.
+		return nil, &requestBuildError{err: err}
+	}
+	req = req.WithContext(ctx)
+	if t.cfg.UserAgent != "" {
+		req.Header.Set("User-Agent", t.cfg.UserAgent)
+	}
+
+	resp, err := t.cfg.Doer.Do(req)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		lastErr = &types.TransportError{Op: req.Method, Endpoint: endpoint, Err: err}
+	} else if resp == nil || resp.Body == nil {
+		return nil, &types.ProtocolError{Message: "HTTP transport returned no response body"}
+	} else {
+		const maxResponseBytes = 4 << 20
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		resp.Body.Close()
+		if len(raw) > maxResponseBytes {
+			return nil, &types.ProtocolError{Message: "HTTP response exceeded 4 MiB limit"}
+		}
+		if readErr != nil {
+			lastErr = &types.TransportError{Op: "read", Endpoint: endpoint, Err: readErr}
+		} else {
+			var res *Result
+			res, lastErr = t.classify(resp, raw, endpoint, attempt, rc)
+			if res != nil {
+				return res, nil
+			}
+		}
+	}
+
+	return nil, lastErr
 }
 
 // classify maps an HTTP response to a Result or to the typed

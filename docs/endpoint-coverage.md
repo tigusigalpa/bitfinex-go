@@ -1,6 +1,12 @@
 # Endpoint coverage — Bitfinex API v2
 
-Version: **v1.2.0**. Review date: **2026-10-30**.
+Version: **v1.2.1**. Review date: **2026-10-30**.
+
+Patch hardening: [v1.2.1 upgrade notes](upgrade-v1.2.1.md) describe per-key signed
+exchange ordering, disconnect resets, nullable liquidation prices and strict IDs.
+Regression evidence: `regressions_v121_test.go`, `account/ids_test.go`,
+`internal/authflow/gate_test.go`, `internal/httpx/nonce_order_test.go`, and
+`websocket/regressions_v121_test.go`.
 
 The contracts deferred in v1.1.0 now have typed entry points. Legacy raw
 signatures remain for source compatibility. The inventory below identifies

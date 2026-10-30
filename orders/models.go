@@ -82,9 +82,15 @@ func FromWire(a []any) (Order, error) {
 		return o, err
 	}
 	var err error
-	o.ID = wire.IntOr(a, 0, 0)
-	o.GID = wire.IntOr(a, 1, 0)
-	o.CID = wire.IntOr(a, 2, 0)
+	if o.ID, err = wire.RequiredID(a, 0); err != nil {
+		return o, err
+	}
+	if o.GID, err = wire.OptionalInt(a, 1); err != nil {
+		return o, err
+	}
+	if o.CID, err = wire.OptionalInt(a, 2); err != nil {
+		return o, err
+	}
 	if sym, serr := wire.Str(a, 3); serr != nil {
 		return o, serr
 	} else {
@@ -139,7 +145,9 @@ func FromWire(a []any) (Order, error) {
 	if o.Hidden, err = wire.Bool(a, 24); err != nil {
 		return o, err
 	}
-	o.PlacedID = wire.IntOr(a, 25, 0)
+	if o.PlacedID, err = wire.OptionalInt(a, 25); err != nil {
+		return o, err
+	}
 	if o.Routing, err = wire.Str(a, 28); err != nil {
 		return o, err
 	}
@@ -176,7 +184,9 @@ func TradeExecutionFromWire(a []any) (TradeExecution, error) {
 		return t, err
 	}
 	var err error
-	t.ID = wire.IntOr(a, 0, 0)
+	if t.ID, err = wire.RequiredID(a, 0); err != nil {
+		return t, err
+	}
 	if t.Pair, err = wire.Str(a, 1); err != nil {
 		return t, err
 	}
@@ -185,7 +195,9 @@ func TradeExecutionFromWire(a []any) (TradeExecution, error) {
 	} else {
 		t.MTSCreate = mts
 	}
-	t.OrderID = wire.IntOr(a, 3, 0)
+	if t.OrderID, err = wire.RequiredID(a, 3); err != nil {
+		return t, err
+	}
 	if t.ExecAmount, err = wire.DecOr(a, 4, types.Decimal{}); err != nil {
 		return t, err
 	}

@@ -21,6 +21,7 @@ const bookTop = 25
 // Raw R0 books: keyed by order id; ordering is price desc/asc
 // and order-id asc within one price — do NOT mix the two rules.
 type bookIntegrity struct {
+	hasSnapshot bool
 	// aggregated P-books: price => amount
 	bids map[string]string
 	asks map[string]string
@@ -40,6 +41,7 @@ func newBookIntegrity() *bookIntegrity {
 }
 
 func (b *bookIntegrity) clear() {
+	b.hasSnapshot = false
 	b.bids = map[string]string{}
 	b.asks = map[string]string{}
 	b.rawBids = map[int64][2]string{}

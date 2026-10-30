@@ -32,6 +32,10 @@ const (
 	// error events). After ErrConsumerTooSlow the subscription
 	// channel is closed.
 	KindError
+	// KindReset invalidates all cached state for a lost connection. Buffered
+	// events from that generation are discarded. Wait for new snapshots and
+	// reconcile account history before resuming decisions based on that state.
+	KindReset
 )
 
 // String describes the event kind.
@@ -49,6 +53,8 @@ func (k Kind) String() string {
 		return "checksum"
 	case KindError:
 		return "error"
+	case KindReset:
+		return "reset"
 	}
 	return "unknown"
 }
@@ -57,10 +63,13 @@ func (k Kind) String() string {
 // the payload fields is populated for data events; Raw always
 // preserves the decoded wire payload as an escape hatch.
 type Event struct {
-	Kind    Kind   `json:"kind"`
-	ChanID  int64  `json:"chan_id"`
-	Channel string `json:"channel,omitempty"` // "ticker","trades","book","candles","status","auth"
-	Symbol  string `json:"symbol,omitempty"`
+	// Generation identifies a connection attempt; it increases on reconnect.
+	// KindReset refers to the lost generation, new snapshots to its successor.
+	Generation uint64 `json:"generation"`
+	Kind       Kind   `json:"kind"`
+	ChanID     int64  `json:"chan_id"`
+	Channel    string `json:"channel,omitempty"` // "ticker","trades","book","candles","status","auth"
+	Symbol     string `json:"symbol,omitempty"`
 
 	// Action details KindInfo events ("subscribed",
 	// "unsubscribed", "conf", "resubscribed", "paused",
@@ -81,7 +90,7 @@ type Event struct {
 	// Auth channel payload (chanID 0).
 	Auth *AuthEvent `json:"auth,omitempty"`
 
-	// Err is set on KindError events.
+	// Err is set on KindError and KindReset events.
 	Err error `json:"-"`
 
 	// Raw is the decoded wire payload (escape hatch for fields

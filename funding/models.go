@@ -52,7 +52,9 @@ func OfferFromWire(a []any) (FundingOffer, error) {
 		return o, err
 	}
 	var err error
-	o.ID = wire.IntOr(a, 0, 0)
+	if o.ID, err = wire.RequiredID(a, 0); err != nil {
+		return o, err
+	}
 	if sym, serr := wire.Str(a, 1); serr != nil {
 		return o, serr
 	} else {
@@ -125,7 +127,9 @@ func CreditFromWire(a []any) (FundingCredit, error) {
 		return c, err
 	}
 	var err error
-	c.ID = wire.IntOr(a, 0, 0)
+	if c.ID, err = wire.RequiredID(a, 0); err != nil {
+		return c, err
+	}
 	if sym, serr := wire.Str(a, 1); serr != nil {
 		return c, serr
 	} else {
@@ -199,7 +203,9 @@ func TradeFromWire(a []any) (FundingTrade, error) {
 		return t, err
 	}
 	var err error
-	t.ID = wire.IntOr(a, 0, 0)
+	if t.ID, err = wire.RequiredID(a, 0); err != nil {
+		return t, err
+	}
 	if sym, serr := wire.Str(a, 1); serr != nil {
 		return t, serr
 	} else {
@@ -210,7 +216,9 @@ func TradeFromWire(a []any) (FundingTrade, error) {
 	} else {
 		t.MTSCreate = mts
 	}
-	t.OfferID = wire.IntOr(a, 3, 0)
+	if t.OfferID, err = wire.RequiredID(a, 3); err != nil {
+		return t, err
+	}
 	if t.Amount, err = wire.DecOr(a, 4, types.Decimal{}); err != nil {
 		return t, err
 	}

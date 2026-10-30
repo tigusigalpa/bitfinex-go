@@ -98,6 +98,11 @@ func (c *Client) handleBookData(sub *Subscription, id int64, arr []any, payload 
 	isFunding := types.Symbol(sub.req.Symbol).IsFunding()
 	_, nested := wire.At(arr, 0).([]any)
 	snapshot := len(arr) == 0 || nested
+	if !snapshot && (book == nil || !book.hasSnapshot) {
+		c.deliverError(id, &types.ProtocolError{Message: "book update arrived before a fresh snapshot"})
+		c.resyncChannel(id)
+		return
+	}
 	rows := [][]any{arr}
 	if snapshot {
 		rows = nil
@@ -127,6 +132,9 @@ func (c *Client) handleBookData(sub *Subscription, id int64, arr []any, payload 
 		}
 		for _, row := range rows {
 			applyLevel(book, row, isRaw, isFunding)
+		}
+		if snapshot {
+			book.hasSnapshot = true
 		}
 	}
 	ev := Event{Kind: KindUpdate, ChanID: id, Channel: "book", Symbol: sub.req.Symbol, Raw: payload}
