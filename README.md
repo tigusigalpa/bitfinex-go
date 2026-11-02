@@ -1,4 +1,6 @@
-# bitfinex-go
+# Bitfinex Go Client/SDK/Library
+
+![Bitfinex Go client/sdk/library](https://i.postimg.cc/0N5hnNYp/bitfinex-go-hero-banner.jpg)
 
 A Go client for the **Bitfinex API v2**, with REST services and WebSocket streams.
 
