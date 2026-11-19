@@ -93,7 +93,7 @@ jobs:
           languages: go
           build-mode: manual
       - run: go build ./...
-      - uses: github/codeql-action/analyze@793b778da9c9275a0f276522b27cb5fc14bba279 # v4
+      - uses: github/codeql-action/analyze@b4de9cd566cc3bbee2dd89396213b1b1f5093d99 # v4
 
   dependency-review:
     if: github.event_name == 'pull_request'
