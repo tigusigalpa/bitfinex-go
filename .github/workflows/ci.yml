@@ -88,7 +88,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.x"
-      - uses: github/codeql-action/init@793b778da9c9275a0f276522b27cb5fc14bba279 # v4
+      - uses: github/codeql-action/init@b4de9cd566cc3bbee2dd89396213b1b1f5093d99 # v4
         with:
           languages: go
           build-mode: manual
